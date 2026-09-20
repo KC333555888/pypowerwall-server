@@ -2,6 +2,11 @@
 
 ## Version History
 
+### [0.6.7] - Upcoming
+
+**Added:**
+- **Tesla Remote Meter data published to MQTT** — wireless CT remote meters (config.json meter type `trm_mb`, surfaced by pypowerwall as `TRM--<din>` vitals blocks) are now published per CT as `{prefix}/{gw}/meters/remote/{din}/ct{n}/{voltage,current,power,energy_imported,energy_exported}` (lifetime energy converted from Tesla's native watt-seconds to Wh) plus a full per-CT JSON topic, mirroring the existing solar string topics. Matching Home Assistant auto-discovery sensors are included (`entity_category: diagnostic`). Silently absent when no remote meter is configured or the installed pypowerwall version doesn't surface the data, same graceful-degradation behavior as solar strings.
+
 ### [0.6.6] - 2026-09-13
 
 **Added:**

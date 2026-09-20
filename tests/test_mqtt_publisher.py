@@ -664,6 +664,151 @@ def _status_with_energy() -> GatewayStatus:
     return status
 
 
+class TestMqttRemoteMeterTopics:
+    """Verify Tesla Remote Meter (wireless CT meter) MQTT topics are published
+    correctly - sourced from pw.vitals()'s TRM--<din> blocks, mirroring the
+    strings publishing pattern in TestMqttStringTopics."""
+
+    def _make_publisher(self, monkeypatch) -> MqttPublisher:
+        from app.config import settings
+        monkeypatch.setattr(settings, "mqtt_host", "localhost")
+        monkeypatch.setattr(settings, "mqtt_port", 1883)
+        monkeypatch.setattr(settings, "mqtt_topic_prefix", "pypowerwall")
+        monkeypatch.setattr(settings, "mqtt_qos", 1)
+        monkeypatch.setattr(settings, "mqtt_retain", True)
+        pub = MqttPublisher()
+        mock_client = AsyncMock()
+        pub._client = mock_client
+        pub._connected = True
+        return pub
+
+    def _make_status_with_vitals(self, vitals: dict, **kwargs) -> GatewayStatus:
+        gateway = Gateway(
+            id="test-gw", name="Test", host="192.168.91.1", gw_pwd="test", online=True
+        )
+        data = PowerwallData(
+            soe=80.0,
+            soe_raw=82.0,
+            aggregates={
+                "solar": {"instant_power": 5000.0},
+                "site": {"instant_power": 0.0},
+                "load": {"instant_power": 5000.0},
+                "battery": {"instant_power": 0.0},
+            },
+            grid_status="UP",
+            mode="self_consumption",
+            reserve=20.0,
+            version="23.44.0",
+            vitals=vitals,
+            timestamp=1_000_000.0,
+        )
+        return GatewayStatus(gateway=gateway, data=data, online=True, last_updated=1_000_000.0)
+
+    @pytest.mark.asyncio
+    async def test_per_ct_topics_published(self, monkeypatch):
+        """Voltage/current/power topics are published per remote-meter CT."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals({
+            "TRM--2002069-00-E--EM4260230B10BC": {
+                "TRM_CT0_InstVoltage": 122.68,
+                "TRM_CT0_InstCurrent": 0.95,
+                "TRM_CT0_InstRealPower": 158.26,
+                "TRM_CT0_Location": "solar",
+            },
+        })
+        await pub.publish_gateway("test-gw", status)
+
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        prefix = "pypowerwall/test-gw/meters/remote/2002069-00-E--EM4260230B10BC/ct0"
+
+        assert published[f"{prefix}/voltage"] == "122.68"
+        assert published[f"{prefix}/current"] == "0.95"
+        assert published[f"{prefix}/power"] == "158.3"
+
+    @pytest.mark.asyncio
+    async def test_lifetime_energy_converted_from_watt_seconds_to_wh(self, monkeypatch):
+        """EnergyImportedWs/EnergyExportedWs (Tesla's native unit) are
+        published in Wh, matching every other energy sensor in this file."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals({
+            "TRM--2002069-00-E--EM4260230B10BC": {
+                "TRM_CT0_EnergyImportedWs": 43466036,
+                "TRM_CT0_EnergyExportedWs": 171954,
+            },
+        })
+        await pub.publish_gateway("test-gw", status)
+
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        prefix = "pypowerwall/test-gw/meters/remote/2002069-00-E--EM4260230B10BC/ct0"
+
+        assert published[f"{prefix}/energy_imported"] == f"{43466036 / 3600:.1f}"
+        assert published[f"{prefix}/energy_exported"] == f"{171954 / 3600:.1f}"
+
+    @pytest.mark.asyncio
+    async def test_per_ct_json_topic(self, monkeypatch):
+        """Full per-CT data is published as JSON on the bare CT topic."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals({
+            "TRM--2002069-00-E--EM4260230B10BC": {
+                "TRM_CT0_InstVoltage": 122.68,
+                "TRM_CT0_Location": "solar",
+            },
+        })
+        await pub.publish_gateway("test-gw", status)
+
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        topic = "pypowerwall/test-gw/meters/remote/2002069-00-E--EM4260230B10BC/ct0"
+        assert topic in published
+        data = json.loads(published[topic])
+        assert data["InstVoltage"] == 122.68
+        assert data["Location"] == "solar"
+
+    @pytest.mark.asyncio
+    async def test_multiple_cts_and_meters(self, monkeypatch):
+        """A meter with two active CTs, plus a second meter, both publish
+        independently keyed topics."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals({
+            "TRM--DIN0000000000000000000001": {
+                "TRM_CT0_InstVoltage": 120.0,
+                "TRM_CT1_InstVoltage": 121.0,
+            },
+            "TRM--DIN0000000000000000000002": {
+                "TRM_CT0_InstVoltage": 240.0,
+            },
+        })
+        await pub.publish_gateway("test-gw", status)
+
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct0/voltage"] == "120.00"
+        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct1/voltage"] == "121.00"
+        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000002/ct0/voltage"] == "240.00"
+
+    @pytest.mark.asyncio
+    async def test_no_vitals_publishes_nothing_extra(self, monkeypatch):
+        """No vitals data (or no TRM blocks) means no remote-meter topics -
+        must not raise or publish anything under meters/remote."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals(None)
+        await pub.publish_gateway("test-gw", status)
+
+        published = [c.args[0] for c in pub._client.publish.call_args_list]
+        assert not any("meters/remote" in t for t in published)
+
+    @pytest.mark.asyncio
+    async def test_non_trm_vitals_blocks_ignored(self, monkeypatch):
+        """Other device blocks (TEPINV--, TESYNC--, ...) in vitals must not
+        be mistaken for remote meters."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals({
+            "TEPINV--1707000-21-M--TG126233000WMD": {"PINV_State": "PINV_GridFollowing"},
+        })
+        await pub.publish_gateway("test-gw", status)
+
+        published = [c.args[0] for c in pub._client.publish.call_args_list]
+        assert not any("meters/remote" in t for t in published)
+
+
 class TestLifetimeEnergyTopics:
     @pytest.mark.asyncio
     async def test_energy_topics_published(self, monkeypatch):

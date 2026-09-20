@@ -209,6 +209,27 @@ string of a pair is present (e.g. A without B), no AB rollup is emitted.
 
 Published `online` on each successful poll; `offline` published as a **Last Will and Testament (LWT)** message so HA marks sensors unavailable if the server crashes.
 
+### Remote meter topics (Tesla wireless CT meters)
+
+Published when the gateway has one or more Tesla Remote Meters configured
+(config.json meter type `trm_mb`) — a wireless CT meter, distinct from the
+solar strings above. `{din}` is the meter's own device identifier; `{n}` is
+the CT index (a meter can report more than one CT, and a gateway can have
+more than one meter):
+
+| Topic | Value | Unit |
+|-------|-------|------|
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/voltage` | `122.68` | `V` |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/current` | `0.95` | `A` |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/power` | `158.3` | `W` |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_imported` | `12073.9` | `Wh` (lifetime, converted from Tesla's watt-seconds) |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_exported` | `47.8` | `Wh` (lifetime, converted from Tesla's watt-seconds) |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}` | `{"InstVoltage": ..., "InstCurrent": ..., "InstRealPower": ..., "Location": "solar", ...}` | JSON |
+
+Sourced from `pw.vitals()`'s `TRM--{din}` blocks — requires a pypowerwall
+version that surfaces remote meter data, and a gateway with at least one
+remote meter configured; silently absent otherwise, same as solar strings.
+
 ---
 
 ## Home Assistant Auto-Discovery

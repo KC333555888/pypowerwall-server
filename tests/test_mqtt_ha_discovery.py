@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.mqtt.ha_discovery import build_discovery_payloads
+from app.mqtt.ha_discovery import build_discovery_payloads, extract_remote_meters
 from app.mqtt.publisher import MqttPublisher
 from app.models.gateway import Gateway, GatewayStatus, PowerwallData
 
@@ -321,6 +321,142 @@ class TestBuildDiscoveryPayloads:
         assert "homeassistant/sensor/pypowerwall_home_string_ab1_voltage/config" in payloads
         assert "homeassistant/sensor/pypowerwall_home_string_ab2_power/config" in payloads
 
+    def test_no_remote_meter_sensors_when_absent(self):
+        """When remote_meters is not supplied, no remote-meter sensors are added."""
+        results = build_discovery_payloads(
+            gateway_id="home",
+            gateway_name="Home",
+            topic_prefix="pypowerwall",
+            ha_prefix="homeassistant",
+        )
+        assert [t for t, _ in results if "remote_meter" in t] == []
+        assert len(results) == 19
+
+    def test_remote_meter_sensors_single_ct(self):
+        """One meter, one CT -> 5 extra entries (voltage/current/power/energy x2)."""
+        remote_meters = {
+            "2002069-00-E--EM4260230B10BC": {
+                "0": {"InstVoltage": 122.7, "InstCurrent": 0.95, "InstRealPower": 158.3,
+                      "Location": "solar"},
+            },
+        }
+        results = build_discovery_payloads(
+            gateway_id="home",
+            gateway_name="Home",
+            topic_prefix="pypowerwall",
+            ha_prefix="homeassistant",
+            remote_meters=remote_meters,
+        )
+        payloads = {t: json.loads(p) for t, p in results}
+        assert len(results) == 24  # 19 base + 1 CT x 5 metrics
+
+        topic = "homeassistant/sensor/pypowerwall_home_remote_meter_2002069_00_e_em4260230b10bc_ct0_voltage/config"
+        assert topic in payloads
+        p = payloads[topic]
+        assert p["unit_of_measurement"] == "V"
+        assert p["device_class"] == "voltage"
+        assert p["state_class"] == "measurement"
+        assert p["state_topic"] == "pypowerwall/home/meters/remote/2002069-00-E--EM4260230B10BC/ct0/voltage"
+        assert p["entity_category"] == "diagnostic"
+        assert "solar" in p["name"].lower()
+
+        energy_topic = "homeassistant/sensor/pypowerwall_home_remote_meter_2002069_00_e_em4260230b10bc_ct0_energy_imported/config"
+        assert energy_topic in payloads
+        ep = payloads[energy_topic]
+        assert ep["unit_of_measurement"] == "Wh"
+        assert ep["device_class"] == "energy"
+        assert ep["state_class"] == "total_increasing"
+
+    def test_remote_meter_sensors_multiple_cts_and_meters(self):
+        """Two CTs on one meter plus a second meter -> 3 CTs x 5 metrics = 15 extra."""
+        remote_meters = {
+            "DIN0000000000000000000001": {
+                "0": {"InstVoltage": 120.0},
+                "1": {"InstVoltage": 121.0},
+            },
+            "DIN0000000000000000000002": {
+                "0": {"InstVoltage": 240.0},
+            },
+        }
+        results = build_discovery_payloads(
+            gateway_id="home",
+            gateway_name="Home",
+            topic_prefix="pypowerwall",
+            ha_prefix="homeassistant",
+            remote_meters=remote_meters,
+        )
+        payloads = {t: json.loads(p) for t, p in results}
+        assert len(results) == 34  # 19 base + 3 CTs x 5 metrics
+
+        assert "homeassistant/sensor/pypowerwall_home_remote_meter_din0000000000000000000001_ct0_voltage/config" in payloads
+        assert "homeassistant/sensor/pypowerwall_home_remote_meter_din0000000000000000000001_ct1_voltage/config" in payloads
+        assert "homeassistant/sensor/pypowerwall_home_remote_meter_din0000000000000000000002_ct0_voltage/config" in payloads
+
+
+class TestExtractRemoteMeters:
+    """Unit tests for extract_remote_meters() - regroups the flat
+    TRM--<din>/TRM_CT{n}_<Metric> vitals shape into {din: {ct: {metric: value}}}."""
+
+    def test_single_meter_single_ct(self):
+        vitals = {
+            "TRM--2002069-00-E--EM4260230B10BC": {
+                "TRM_CT0_InstVoltage": 122.7,
+                "TRM_CT0_InstCurrent": 0.95,
+                "TRM_CT0_Location": "solar",
+                "serialNumber": "2002069-00-E--EM4260230B10BC",  # non-CT field, ignored
+            },
+        }
+        result = extract_remote_meters(vitals)
+        assert result == {
+            "2002069-00-E--EM4260230B10BC": {
+                "0": {"InstVoltage": 122.7, "InstCurrent": 0.95, "Location": "solar"},
+            },
+        }
+
+    def test_multiple_cts_same_meter(self):
+        vitals = {
+            "TRM--DIN1": {
+                "TRM_CT0_InstVoltage": 120.0,
+                "TRM_CT1_InstVoltage": 121.0,
+            },
+        }
+        result = extract_remote_meters(vitals)
+        assert set(result["DIN1"].keys()) == {"0", "1"}
+        assert result["DIN1"]["0"]["InstVoltage"] == 120.0
+        assert result["DIN1"]["1"]["InstVoltage"] == 121.0
+
+    def test_multiple_meters(self):
+        vitals = {
+            "TRM--DIN1": {"TRM_CT0_InstVoltage": 120.0},
+            "TRM--DIN2": {"TRM_CT0_InstVoltage": 240.0},
+        }
+        result = extract_remote_meters(vitals)
+        assert set(result.keys()) == {"DIN1", "DIN2"}
+
+    def test_non_trm_blocks_ignored(self):
+        vitals = {
+            "TEPINV--1707000-21-M--TG126233000WMD": {"PINV_State": "PINV_GridFollowing"},
+            "NEURIO--VAH1234AB1234": {"NEURIO_CT0_InstVoltage": 120.0},
+        }
+        assert extract_remote_meters(vitals) == {}
+
+    def test_meter_with_no_ct_fields_omitted(self):
+        """A TRM-- block with only device-identity fields (no TRM_CT{n}_*
+        metrics) contributes nothing - there's no reading to publish."""
+        vitals = {"TRM--DIN1": {"serialNumber": "DIN1", "manufacturer": "TESLA"}}
+        assert extract_remote_meters(vitals) == {}
+
+    def test_none_or_malformed_input(self):
+        assert extract_remote_meters(None) == {}
+        assert extract_remote_meters({}) == {}
+        assert extract_remote_meters({"TRM--DIN1": "not a dict"}) == {}
+
+    def test_empty_din_suffix_skipped(self):
+        """A bare 'TRM--' key (no DIN suffix) is malformed and contributes
+        nothing, rather than being registered under an empty-string key."""
+        vitals = {"TRM--": {"TRM_CT0_InstVoltage": 120.0}}
+        assert extract_remote_meters(vitals) == {}
+
 
 # ---------------------------------------------------------------------------
 # Integration tests for MqttPublisher._publish_ha_discovery()
@@ -437,3 +573,44 @@ class TestPublisherHaDiscovery:
                 break
         else:
             pytest.fail("No discovery payload published")
+
+    @pytest.mark.asyncio
+    async def test_discovery_includes_remote_meter_from_vitals(self, monkeypatch):
+        """A TRM--<din> block in status.data.vitals produces remote-meter
+        discovery sensors, end to end through _publish_ha_discovery()."""
+        pub = self._make_publisher(monkeypatch)
+        mock_client = AsyncMock()
+        pub._client = mock_client
+        pub._connected = True
+
+        gateway = Gateway(id="test-gw", name="Test Gateway", host="192.168.91.1", online=True)
+        data = PowerwallData(
+            soe=75.0, soe_raw=75.0,
+            aggregates={
+                "solar": {"instant_power": 3000.0}, "site": {"instant_power": -500.0},
+                "load": {"instant_power": 2500.0}, "battery": {"instant_power": 0.0},
+            },
+            grid_status="UP", mode="self_consumption", reserve=20.0, version="26.26.11",
+            vitals={
+                "TRM--2002069-00-E--EM4260230B10BC": {
+                    "TRM_CT0_InstVoltage": 122.7,
+                    "TRM_CT0_InstCurrent": 0.95,
+                    "TRM_CT0_InstRealPower": 158.3,
+                    "TRM_CT0_Location": "solar",
+                },
+            },
+            timestamp=1_000_000.0,
+        )
+        status = GatewayStatus(gateway=gateway, data=data, online=True, last_updated=1_000_000.0)
+
+        await pub.publish_gateway("test-gw", status)
+
+        disc_topics = [
+            c.args[0] for c in mock_client.publish.call_args_list
+            if "homeassistant" in c.args[0] and "remote_meter" in c.args[0]
+        ]
+        assert len(disc_topics) == 5  # voltage/current/power/energy_imported/energy_exported
+        assert (
+            "homeassistant/sensor/pypowerwall_test-gw_remote_meter_"
+            "2002069_00_e_em4260230b10bc_ct0_voltage/config" in disc_topics
+        )

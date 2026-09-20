@@ -64,6 +64,19 @@ Topic layout
     {prefix}/{gateway_id}/strings/{AB,CD,EF}/power    float — W (sum of pair)
 
     Multi-PW3 single-gateway: also AB1/CD1/EF1, AB2/CD2/EF2 etc.
+
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/voltage          float — V
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/current          float — A
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/power            float — W
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/energy_imported  float — Wh, lifetime (converted from Tesla's watt-seconds)
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/energy_exported  float — Wh, lifetime (converted from Tesla's watt-seconds)
+    {prefix}/{gateway_id}/meters/remote/{din}/ct{n}                  JSON  — full per-CT data (includes Location: "site"/"solar"/"load")
+
+    Tesla Remote Meter: a wireless CT meter (config.json type "trm_mb").
+    {din} is the meter's own device identifier; {n} is the CT index (a meter
+    can report more than one CT, and a gateway can have more than one meter).
+    Sourced from pw.vitals()'s TRM--<din> blocks - absent on pypowerwall
+    versions that don't populate them, or gateways with no remote meter.
 """
 import asyncio
 import json
@@ -156,7 +169,7 @@ class MqttPublisher:
             return
         try:
             from app.config import settings  # late import
-            from app.mqtt.ha_discovery import build_discovery_payloads
+            from app.mqtt.ha_discovery import build_discovery_payloads, extract_remote_meters
 
             gateway_name = (
                 status.gateway.name
@@ -169,6 +182,8 @@ class MqttPublisher:
             if status.data and status.data.strings and isinstance(status.data.strings, dict):
                 string_ids = list(status.data.strings.keys())
 
+            remote_meters = extract_remote_meters(status.data.vitals) if status.data else {}
+
             payloads = build_discovery_payloads(
                 gateway_id=gateway_id,
                 gateway_name=gateway_name,
@@ -176,6 +191,7 @@ class MqttPublisher:
                 ha_prefix=settings.mqtt_ha_prefix,
                 version=version,
                 string_ids=string_ids,
+                remote_meters=remote_meters or None,
             )
             for topic, payload in payloads:
                 await self._safe_publish(topic, payload, retain=True, qos=settings.mqtt_qos)
@@ -415,6 +431,50 @@ class MqttPublisher:
                                     f"{p_prefix}/power",
                                     f"{total_p:.2f}", retain, qos,
                                 )
+
+                # Remote meter topics (Tesla wireless CT meters - one or more
+                # CTs per meter, one or more meters per gateway)
+                if data.vitals:
+                    from app.mqtt.ha_discovery import extract_remote_meters
+
+                    remote_meters = extract_remote_meters(data.vitals)
+                    for din, cts in remote_meters.items():
+                        for ct_index, fields in cts.items():
+                            ct_prefix = f"{prefix}/meters/remote/{din}/ct{ct_index}"
+                            voltage = _safe_float(fields.get("InstVoltage"))
+                            if voltage is not None:
+                                await self._safe_publish(
+                                    f"{ct_prefix}/voltage", f"{voltage:.2f}", retain, qos
+                                )
+                            current = _safe_float(fields.get("InstCurrent"))
+                            if current is not None:
+                                await self._safe_publish(
+                                    f"{ct_prefix}/current", f"{current:.2f}", retain, qos
+                                )
+                            power = _safe_float(fields.get("InstRealPower"))
+                            if power is not None:
+                                await self._safe_publish(
+                                    f"{ct_prefix}/power", f"{power:.1f}", retain, qos
+                                )
+                            # Lifetime accumulators arrive in watt-seconds; HA's
+                            # energy dashboard (and the rest of this file's
+                            # energy sensors) expects Wh.
+                            energy_imported_ws = _safe_float(fields.get("EnergyImportedWs"))
+                            if energy_imported_ws is not None:
+                                await self._safe_publish(
+                                    f"{ct_prefix}/energy_imported",
+                                    f"{energy_imported_ws / 3600:.1f}", retain, qos,
+                                )
+                            energy_exported_ws = _safe_float(fields.get("EnergyExportedWs"))
+                            if energy_exported_ws is not None:
+                                await self._safe_publish(
+                                    f"{ct_prefix}/energy_exported",
+                                    f"{energy_exported_ws / 3600:.1f}", retain, qos,
+                                )
+                            # Full per-CT JSON for consumers that want everything
+                            await self._safe_publish(
+                                ct_prefix, json.dumps(fields), retain, qos
+                            )
 
                 # Summary JSON topic
                 summary = {
