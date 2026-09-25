@@ -2,6 +2,14 @@
 
 ## Version History
 
+### [0.6.7] - Upcoming
+
+**Fixed:**
+- **Islanding "in progress" race on Python 3.13** — a completed islanding command could still be reported as in progress for one event-loop iteration after `local_control()` returned. The in-flight marker was cleared by a done-callback, which asyncio runs on a later loop iteration, and on Python 3.13 the call returns before that. An immediate follow-up command could then be refused with "An islanding command is still in progress" (with the cooldown disabled via `PW_ISLANDING_COOLDOWN=0`), and `tests/test_islanding.py::test_local_control_raises_cooldown_error` failed on 3.13. "In progress" now means the dispatched command hasn't finished (`not future.done()`), independent of callback timing. New regression tests build the exact 3.13 state directly, so they catch it on every Python version. Docker images (Python 3.12) were not affected.
+
+**Changed:**
+- **Python 3.13 in CI** — the `pytest` and simulator workflows now test Python 3.10–3.13 (previously 3.10–3.12, which is why the race went unnoticed), and `pyproject.toml` lists the 3.13 classifier. `requires-python = ">=3.10"` already allowed 3.13 installs.
+
 ### [0.6.6] - 2026-09-13
 
 **Added:**
