@@ -278,6 +278,19 @@ logged at the first successful poll and again on every change
 (`Gateway <id> firmware changed: X -> Y`), so `docker logs pypowerwall-server`
 answers "when did my Powerwall firmware update?" without extra tooling.
 
+**Timeouts:**
+```bash
+PW_TIMEOUT=10                # Pypowerwall request timeout in seconds (default: 10)
+```
+`PW_TIMEOUT` is the timeout the server passes to the pypowerwall library for
+gateway/cloud requests. It deliberately defaults to **10 s**, higher than the
+library's own 5 s default: the server derives its per-step poll budget from
+`PW_TIMEOUT + 2s` so the library's internal timeout fires first (abandoned
+executor threads holding the library's per-function API lock were a real
+failure mode), and v1r/TEDAPI flows need more headroom than a bare local-API
+call. Raise it on slow links (e.g. remote FleetAPI sites) rather than
+watching intermittent 503s.
+
 **Time-Series Storage (Daily Energy Stats):**
 ```bash
 PW_TIMESERIES_RETENTION=24h            # Raw 5s sample retention (default: 24h)

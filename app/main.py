@@ -777,7 +777,7 @@ Environment Variables:
   PW_STYLE           Theme style (default: clear)
   PW_SITEID          Specific site ID (for multiple sites)
   PW_CACHE_EXPIRE    Polling interval in seconds (default: 5)
-  PW_TIMEOUT         Request timeout in seconds (default: 5)
+  PW_TIMEOUT         Request timeout in seconds (default: 10)
   PW_DEBUG           Enable debug logging (default: false)
   PW_PORT            Server port (default: 8675)
   PW_BIND_ADDRESS    Server bind address (default: 0.0.0.0)
