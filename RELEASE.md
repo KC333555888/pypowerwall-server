@@ -4,6 +4,9 @@
 
 ### [0.6.7] - Upcoming
 
+**Added:**
+- **Powerwall 3 fans in `/fans/pw`** — ported from pypowerwall proxy t104 (jasonacox/pypowerwall#398) with the same keys and order. Each Powerwall 3 inverter reports two fans (A and B), numbered after any Powerwall 2/+ fans, leader first (as in `/pod`). `FANn_actual` is the measured RPM (`PCH_FanSpeed_A`/`_B`). `FANn_target` is `null` because PW3 has no target-RPM signal, and the new `FANn_duty` is the fan drive duty cycle in percent (`PCH_FanDuty_A`/`_B`). Without this port, the pypowerwall release that adds PW3 fans to `get_fan_speeds()` would have made a PW3 system return all-null `FANn_actual`/`FANn_target` in follower-first order instead of `{}`. `/fans` passes the new `TEPINV--<din>` objects through unchanged. Powerwall 2/+ output is byte-identical.
+
 **Fixed:**
 - **Islanding "in progress" race on Python 3.13** — a completed islanding command could still be reported as in progress for one event-loop iteration after `local_control()` returned. The in-flight marker was cleared by a done-callback, which asyncio runs on a later loop iteration, and on Python 3.13 the call returns before that. An immediate follow-up command could then be refused with "An islanding command is still in progress" (with the cooldown disabled via `PW_ISLANDING_COOLDOWN=0`), and `tests/test_islanding.py::test_local_control_raises_cooldown_error` failed on 3.13. "In progress" now means the dispatched command hasn't finished (`not future.done()`), independent of callback timing. New regression tests build the exact 3.13 state directly, so they catch it on every Python version. Docker images (Python 3.12) were not affected.
 
