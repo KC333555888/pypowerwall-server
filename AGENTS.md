@@ -192,6 +192,21 @@ async def get_aggregates():
         ...
 ```
 
+### 8. History and Time-Series Extensions
+
+Follow DESIGN.md "History and Time-Series Data" when adding recorded signals or
+history UI:
+
+- Add a signal by extending the code registry and metric catalog. Don't add an
+  environment variable per signal; environment variables only control interval,
+  retention and on/off.
+- The history page must render new metrics and new chart groups from the
+  catalog, with no page edits. Viewing choices live in the URL and browser
+  storage.
+- Record from data the poll already has (no extra gateway calls), keep database
+  work off the event loop, and never let recording break a poll.
+- Put shared chart code in a shared static script, not a copy per page.
+
 ## Configuration
 
 ### Environment Variables
