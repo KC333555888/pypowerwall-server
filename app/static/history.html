@@ -617,7 +617,7 @@
             energyOn: new Set(['solar_kwh']),
             tempMetricsOff: new Set(),
             fanMode: 'fan_speed',
-            unitSel: { temperature: 'all', fan: 'all' },  // 'all' or a unit key
+            unitSel: { temperature: 'all', fan: 'all' },  // 'all' or a unit label ("PW2")
             gatewayNames: {},
             devicesInfo: null,
             deviceTrend: null,
@@ -741,6 +741,9 @@
             if (state.range !== 'custom') p.set('range', state.range);
             else { if (state.from) p.set('from', state.from); if (state.to) p.set('to', state.to); }
             if (state.gateway) p.set('gateway', state.gateway);
+            if (state.unitSel.temperature !== 'all') p.set('temp_pw', state.unitSel.temperature);
+            if (state.unitSel.fan !== 'all') p.set('fan_pw', state.unitSel.fan);
+            if (state.fanMode === 'fan_duty') p.set('fan', 'duty');
             const q = p.toString();
             history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
         }
@@ -757,6 +760,8 @@
                 applyPreset(range && (range in PRESET_DAYS || range === 'all') ? range : '30d');
             }
             state.gateway = p.get('gateway') || '';
+            state.unitSel = { temperature: p.get('temp_pw') || 'all', fan: p.get('fan_pw') || 'all' };
+            state.fanMode = p.get('fan') === 'duty' ? 'fan_duty' : 'fan_speed';
             const unit = storageGet(UNIT_KEY);
             state.unit = unit === 'F' ? 'F' : 'C';
         }
@@ -1302,17 +1307,22 @@
                     b.type = 'button';
                     b.textContent = label;
                     b.setAttribute('aria-pressed', String(state.fanMode === g));
-                    b.addEventListener('click', () => { state.fanMode = g; renderDeviceCards(); });
+                    b.addEventListener('click', () => { state.fanMode = g; writeUrl(); renderDeviceCards(); });
                     seg.appendChild(b);
                 }
                 controls.appendChild(seg);
             }
 
             const inGroup = kindSeries.filter(s => groups.includes(metricsInfo[s.metric]?.group));
-            // Powerwall selector: All, or one unit at a time (less clutter)
-            const units = powerwallUnits(inGroup);
-            let sel = state.unitSel[kind];
-            if (sel !== 'all' && !units.some(u => u.key === sel)) sel = state.unitSel[kind] = 'all';
+            // Powerwall selector: All, or one unit at a time (less clutter).
+            // Numbered across every device series so PW2 is the same unit on
+            // both cards; only units with data for this card get a button.
+            const inCard = new Set(inGroup.map(s => unitKeyOf(s.gateway, s.device)));
+            const units = powerwallUnits(trend.series || []).filter(u => inCard.has(u.key));
+            // The selection (from the URL or a click) is kept even when this
+            // range has no data for it, so a bookmark survives an empty range
+            const selUnit = units.find(u => u.label === state.unitSel[kind]);
+            const sel = selUnit ? selUnit.key : 'all';
             const unitIdx = new Map(units.map((u, i) => [u.key, i]));
             const showUnitSuffix = sel === 'all' && units.length > 1;
             const shown = sel === 'all' ? inGroup : inGroup.filter(s => unitKeyOf(s.gateway, s.device) === sel);
@@ -1323,12 +1333,13 @@
                 seg.setAttribute('role', 'group');
                 seg.setAttribute('aria-label', 'Powerwall');
                 for (const u of [{ key: 'all', label: 'All', title: 'All Powerwalls' }, ...units]) {
+                    const value = u.key === 'all' ? 'all' : u.label;
                     const b = document.createElement('button');
                     b.type = 'button';
                     b.textContent = u.label;
                     b.title = u.title;
                     b.setAttribute('aria-pressed', String(sel === u.key));
-                    b.addEventListener('click', () => { state.unitSel[kind] = u.key; renderDeviceCards(); });
+                    b.addEventListener('click', () => { state.unitSel[kind] = value; writeUrl(); renderDeviceCards(); });
                     seg.appendChild(b);
                 }
                 controls.appendChild(seg);

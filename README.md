@@ -357,9 +357,13 @@ each step); longer ranges use the daily low/average/high. The **1h** and
 **6h** ranges show the temperature and fan charts in fine detail (a 1h
 chart at `PW_TIMESERIES_DEVICE_INTERVAL=5s` has 10-second steps, versus
 4-minute steps at 24h) and refresh every minute; the energy card shows
-today for those ranges, since energy is totalled per day. The range and gateway are kept in the URL, so a view can
-be bookmarked, e.g. `/history?range=90d`. Under `PROXY_BASE_URL` it is at
-`<base>/history`.
+today for those ranges, since energy is totalled per day.
+
+The range, gateway, selected Powerwall for each chart and the fan
+speed/duty view are kept in the URL, so a view can be bookmarked, e.g.
+`/history?range=90d` or `/history?range=6h&temp_pw=PW2&fan_pw=PW1&fan=duty`.
+Powerwall numbering is the same on both charts. Under `PROXY_BASE_URL` it
+is at `<base>/history`.
 
 ### Configuration File (gateways.yaml)
 
