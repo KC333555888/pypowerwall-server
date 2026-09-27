@@ -32,15 +32,15 @@ Device signals (Powerwall temperatures and fans):
     - ``device_series``  one row per (gateway, device block, metric), e.g.
       ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
     - ``device_samples`` (series_id, ts, value), recorded at most every
-      PW_TIMESERIES_DEVICE_INTERVAL (default 5s, matching the poll
-      cycle) and pruned to PW_TIMESERIES_DEVICE_RETENTION (default 30d).
+      PW_TIMESERIES_DEVICE_INTERVAL (default 60s; 30s or 5s for finer
+      detail) and pruned to PW_TIMESERIES_DEVICE_RETENTION (default 30d).
     - ``device_daily``   per series per gateway-local day: min, max, sum and
       count (so the mean), kept like daily_energy under
       PW_TIMESERIES_DAILY_RETENTION. Long-range history reads this table.
 
-    At 5s a Powerwall 3 records 8 series (~138k rows/day, roughly
-    5 MB/day on disk), so the 30-day default is around 145 MB per unit.
-    Raise PW_TIMESERIES_DEVICE_INTERVAL (e.g. 60s: ~12 MB) to save space.
+    At 60s a Powerwall 3 records 8 series (~11.5k rows/day, roughly
+    0.4 MB/day on disk), so the 30-day default stays around 12 MB per unit.
+    30s doubles that (~24 MB); 5s (every poll) is ~12x (~145 MB).
 
 Energy integration:
     Trapezoidal integration between consecutive samples:
@@ -72,7 +72,7 @@ Environment Variables:
                                   retention (default "30d"). "0" = unlimited,
                                   "-1" = do not record device signals.
     PW_TIMESERIES_DEVICE_INTERVAL Minimum seconds between device signal
-                                  samples per gateway (default "5s").
+                                  samples per gateway (default "60s").
     PW_TIMESERIES_PATH            SQLite file path (default "/data/timeseries.db"
                                   when /data exists — e.g. the Docker image —
                                   otherwise "data/timeseries.db" relative to
@@ -299,7 +299,7 @@ class TimeSeriesStore:
         retention: Any = "24h",
         daily_retention: Any = "0",
         device_retention: Any = "30d",
-        device_interval: Any = "5s",
+        device_interval: Any = "60s",
     ):
         """Create the store.
 
@@ -330,7 +330,7 @@ class TimeSeriesStore:
             device_retention, "30d", "PW_TIMESERIES_DEVICE_RETENTION"
         )
         self._device_interval = max(
-            5, self._coerce(device_interval, "5s", "PW_TIMESERIES_DEVICE_INTERVAL")
+            5, self._coerce(device_interval, "60s", "PW_TIMESERIES_DEVICE_INTERVAL")
         )
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
@@ -729,8 +729,8 @@ class TimeSeriesStore:
         """Record one snapshot of device signals for a gateway.
 
         Called every poll cycle; samples closer together than the device
-        interval are skipped. The 5s default records every poll; a longer
-        PW_TIMESERIES_DEVICE_INTERVAL thins the series to save space.
+        interval are skipped, so the 60s default costs ~1 row per series per
+        minute instead of per poll (5s records every poll).
 
         Args:
             gateway_id: Gateway identifier.
@@ -746,7 +746,7 @@ class TimeSeriesStore:
             return False
         last = self._device_last.get(gateway_id)
         # Poll timing jitters by a second or two; don't let a gap just short
-        # of the interval (e.g. 4.9s at 5s) push the sample to the next poll.
+        # of the interval (e.g. 59.9s at 60s) push the sample to the next poll.
         slack = min(2.5, self._device_interval / 2.0)
         if last is not None and ts - last < self._device_interval - slack:
             return False

@@ -299,8 +299,32 @@ class TestDeviceTrend:
         await store.stop()
 
     @pytest.mark.asyncio
-    async def test_default_interval_records_every_poll(self, tmp_path):
+    async def test_default_interval_is_one_minute(self, tmp_path):
         store = store_for(tmp_path)
+        assert store._device_interval == 60
+        now = time.time()
+        metrics = {("TEPOD--1", "pack_temp_max"): 25.0}
+        stored = [
+            await store.record_device_sample("default", now + i * 5, metrics)
+            for i in range(13)
+        ]
+        assert stored == [True] + [False] * 11 + [True]
+
+    @pytest.mark.asyncio
+    async def test_thirty_second_interval(self, tmp_path):
+        store = store_for(tmp_path, device_interval="30s")
+        assert store._device_interval == 30
+        now = time.time()
+        metrics = {("TEPOD--1", "pack_temp_max"): 25.0}
+        stored = [
+            await store.record_device_sample("default", now + i * 5, metrics)
+            for i in range(7)
+        ]
+        assert stored == [True] + [False] * 5 + [True]
+
+    @pytest.mark.asyncio
+    async def test_five_second_interval_records_every_poll(self, tmp_path):
+        store = store_for(tmp_path, device_interval="5s")
         assert store._device_interval == 5
         now = time.time()
         metrics = {("TEPOD--1", "pack_temp_max"): 25.0}

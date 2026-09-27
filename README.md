@@ -297,7 +297,7 @@ PW_TIMESERIES_RETENTION=24h            # Raw 5s sample retention (default: 24h)
 PW_TIMESERIES_DAILY_RETENTION=0        # Daily kWh aggregate retention (default: 0 = unlimited)
 PW_TIMESERIES_PATH=/data/timeseries.db  # SQLite path (default: /data/timeseries.db if /data exists)
 PW_TIMESERIES_DEVICE_RETENTION=30d     # Temperature/fan sample retention (default: 30d; -1 = don't record)
-PW_TIMESERIES_DEVICE_INTERVAL=5s       # Seconds between temperature/fan samples (default: 5s)
+PW_TIMESERIES_DEVICE_INTERVAL=60s      # Seconds between temperature/fan samples (default: 60s; 30s or 5s for more detail)
 ```
 The server records every poll cycle's power readings to a local SQLite
 store (WAL mode) and derives daily energy totals per gateway via trapezoidal
@@ -323,7 +323,8 @@ file, no writes, UI panel hidden). Retention accepts `90s`, `48h`, `7d`,
 **Powerwall temperatures and fans.** The same store records each
 Powerwall's temperatures (battery pack max/min, shunt, inverter ambient;
 Powerwall 2 ambient) and inverter fans (speed in rpm and duty cycle in %)
-once per `PW_TIMESERIES_DEVICE_INTERVAL` (default 5s, i.e. every poll).
+once per `PW_TIMESERIES_DEVICE_INTERVAL`: `60s` by default, or `30s` or
+`5s` (every poll) for finer detail.
 The readings come from the vitals and fan data each poll already fetches,
 so this adds no gateway calls; they need a TEDAPI connection (Powerwall 3
 temperatures need pypowerwall 0.17.4 or later). A daily low/average/high
@@ -336,10 +337,11 @@ Disk use for the raw samples, per Powerwall 3 (8 signals):
 
 | `PW_TIMESERIES_DEVICE_INTERVAL` | Per day | 7 days | 30 days (default retention) |
 |---|---|---|---|
-| `5s` (default) | ~5 MB | ~35 MB | ~145 MB |
-| `60s` | ~0.4 MB | ~3 MB | ~12 MB |
+| `60s` (default) | ~0.4 MB | ~3 MB | ~12 MB |
+| `30s` | ~0.8 MB | ~6 MB | ~24 MB |
+| `5s` (every poll) | ~5 MB | ~35 MB | ~145 MB |
 
-On an SD card or other small disk, raise the interval or shorten
+If you use `5s` on an SD card or other small disk, consider a shorter
 `PW_TIMESERIES_DEVICE_RETENTION` (e.g. `7d`).
 
 **History page (`/history`).** Look up daily energy for any date range
