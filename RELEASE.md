@@ -1,6 +1,14 @@
 # Release Notes
 
 ## Version History
+
+### [0.8.0] - Upcoming
+
+**Added:**
+- **History page (`/history`)** — look up daily energy for any date range (24 hours to all stored history): range totals (solar, best solar day, home, battery in/out, grid import/export, self-powered %), a per-day chart with series toggles, a table and CSV download. The range and gateway are kept in the URL for bookmarking. Linked from the console header and the Daily Energy card. Charts are drawn on canvas with no external libraries, so the page works without internet access.
+- **Powerwall temperature and fan history** — the time-series store now records each Powerwall's battery pack max/min, shunt and inverter ambient temperatures (Powerwall 2 ambient too) and inverter fan speed (rpm) and duty cycle (%) once a minute, from data each poll already fetches. Signals are stored as generic per-device series, so adding one needs no schema change, with a daily low/average/high kept long-term. New settings `PW_TIMESERIES_DEVICE_RETENTION` (default `30d`; `-1` stops recording) and `PW_TIMESERIES_DEVICE_INTERVAL` (default `60s`). The History page charts them with per-unit toggles, a °C/°F switch and low/average/high for the range. `PCH_heatsinkTemp` is not recorded since it reads a constant on current firmware.
+- **Time-series API** — `GET /api/timeseries/daily` accepts `start`/`end` (`YYYY-MM-DD`) for any range of days; new `GET /api/timeseries/devices` and `GET /api/timeseries/device_trend`; `/api/timeseries/status` reports device sample counts and settings.
+
 ### [0.7.0] - 2026-09-26
 
 **Added:**

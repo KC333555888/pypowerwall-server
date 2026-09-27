@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {PROXY_BASE_SCRIPT}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>History - PyPowerwall Server</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="{PROXY_BASE}/favicon-32x32.png">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* Same tokens as the console (index.html) so the pages read as one app */
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-card: rgba(22, 27, 34, 0.8);
+            --border-color: rgba(48, 54, 61, 0.8);
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-yellow: #d29922;
+            --solar-color: #f0c000;
+            --home-color: #58a6ff;
+            --charge-color: #3fb950;
+            --discharge-color: #a371f7;
+            --import-color: #f85149;
+            --export-color: #db6d28;
+        }
+
+        html {
+            background: #0d1117;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a2332 100%);
+            min-height: 100vh;
+            color: var(--text-primary);
+            line-height: 1.45;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            font-size: 2em;
+        }
+
+        .logo h1 {
+            font-size: 1.5em;
+            font-weight: 600;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .header-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+
+        .header-links a:hover,
+        .header-links a[aria-current="page"] {
+            color: var(--text-primary);
+            background: var(--bg-card);
+        }
+
+        a:focus-visible,
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible {
+            outline: 2px solid var(--accent-blue);
+            outline-offset: 2px;
+        }
+
+        /* Range + gateway controls */
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px 20px;
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .control-group > label {
+            font-size: 0.85em;
+            color: var(--text-secondary);
+        }
+
+        .segmented {
+            display: inline-flex;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .segmented button {
+            background: transparent;
+            border: none;
+            border-right: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            font-size: 0.85em;
+            cursor: pointer;
+        }
+
+        .segmented button:last-child {
+            border-right: none;
+        }
+
+        .segmented button:hover {
+            color: var(--text-primary);
+        }
+
+        .segmented button[aria-pressed="true"] {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--text-primary);
+        }
+
+        input[type="date"],
+        select {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            padding: 5px 8px;
+            font: inherit;
+            font-size: 0.85em;
+            color-scheme: dark;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .card-header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            font-size: 1.05em;
+            font-weight: 600;
+        }
+
+        .card-note {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+
+        /* Range totals */
+        .totals {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .total {
+            border-left: 3px solid var(--border-color);
+            padding: 2px 0 2px 12px;
+        }
+
+        .total .label {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+        }
+
+        .total .value {
+            font-size: 1.35em;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .total .sub {
+            font-size: 0.75em;
+            color: var(--text-muted);
+        }
+
+        .total.solar { border-color: var(--solar-color); }
+        .total.home { border-color: var(--home-color); }
+        .total.charge { border-color: var(--charge-color); }
+        .total.import { border-color: var(--import-color); }
+        .total.export { border-color: var(--export-color); }
+        .total.self { border-color: var(--accent-green); }
+
+        /* Series toggles */
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            color: var(--text-secondary);
+            padding: 3px 10px;
+            font-size: 0.8em;
+            cursor: pointer;
+        }
+
+        .chip .swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            background: var(--swatch);
+        }
+
+        .chip .swatch.line {
+            height: 3px;
+            border-radius: 1px;
+        }
+
+        .chip[aria-pressed="true"] {
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .chip[aria-pressed="false"] .swatch {
+            opacity: 0.25;
+        }
+
+        .chip-label {
+            font-size: 0.8em;
+            color: var(--text-muted);
+            align-self: center;
+            margin-right: 4px;
+        }
+
+        /* Charts */
+        .chart-wrap {
+            position: relative;
+        }
+
+        .chart-wrap canvas {
+            display: block;
+            width: 100%;
+            height: 320px;
+            touch-action: pan-y;
+        }
+
+        .chart-wrap.short canvas {
+            height: 260px;
+        }
+
+        .tooltip {
+            position: absolute;
+            pointer-events: none;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 0.8em;
+            min-width: 160px;
+            box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+            z-index: 5;
+        }
+
+        .tooltip[hidden] {
+            display: none;
+        }
+
+        .tooltip .tt-title {
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .tooltip .tt-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        .tooltip .tt-row .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            flex: none;
+        }
+
+        .tooltip .tt-row .v {
+            margin-left: auto;
+            padding-left: 12px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .empty {
+            color: var(--text-secondary);
+            font-size: 0.9em;
+            padding: 36px 12px;
+            text-align: center;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+
+        .empty code {
+            color: var(--text-primary);
+        }
+
+        /* Tables */
+        .table-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .btn {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            font-size: 0.85em;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            color: var(--text-primary);
+        }
+
+        .table-scroll {
+            overflow-x: auto;
+            margin-top: 12px;
+            max-height: 480px;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85em;
+            font-variant-numeric: tabular-nums;
+        }
+
+        th,
+        td {
+            padding: 6px 10px;
+            text-align: right;
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+        }
+
+        th:first-child,
+        td:first-child {
+            text-align: left;
+        }
+
+        th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            position: sticky;
+            top: 0;
+            background: var(--bg-secondary);
+        }
+
+        .stats-table {
+            margin-top: 12px;
+        }
+
+        .stats-table td:first-child .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            margin-right: 6px;
+        }
+
+        .error {
+            color: var(--accent-red);
+        }
+
+        @media (max-width: 700px) {
+            .container {
+                padding: 12px;
+            }
+            .chart-wrap canvas {
+                height: 260px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <h1>PyPowerwall Server</h1>
+            </div>
+            <nav class="header-links" aria-label="Pages">
+                <a href="{PROXY_BASE}/console">Console</a>
+                <a href="{PROXY_BASE}/history" aria-current="page">History</a>
+                <a href="{PROXY_BASE}/">Power Flow</a>
+                <a href="{PROXY_BASE}/docs">API Docs</a>
+            </nav>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <label id="range-label">Range</label>
+                <div class="segmented" id="range-presets" role="group" aria-labelledby="range-label">
+                    <button type="button" data-range="1d">24h</button>
+                    <button type="button" data-range="7d">7 days</button>
+                    <button type="button" data-range="30d">30 days</button>
+                    <button type="button" data-range="90d">90 days</button>
+                    <button type="button" data-range="1y">1 year</button>
+                    <button type="button" data-range="all">All</button>
+                </div>
+            </div>
+            <div class="control-group">
+                <label for="from-date">From</label>
+                <input type="date" id="from-date">
+                <label for="to-date">to</label>
+                <input type="date" id="to-date">
+            </div>
+            <div class="control-group">
+                <label for="gateway-select">Gateway</label>
+                <select id="gateway-select">
+                    <option value="">All gateways</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label id="unit-label">Temperature</label>
+                <div class="segmented" id="temp-unit" role="group" aria-labelledby="unit-label">
+                    <button type="button" data-unit="C">°C</button>
+                    <button type="button" data-unit="F">°F</button>
+                </div>
+            </div>
+        </div>
+
+        <section class="card" aria-labelledby="energy-title">
+            <div class="card-header">
+                <h2 class="card-title" id="energy-title">Daily energy</h2>
+                <div class="card-note" id="energy-note"></div>
+            </div>
+            <div id="energy-body">
+                <div class="empty">Loading daily energy…</div>
+            </div>
+        </section>
+
+        <section class="card" aria-labelledby="temp-title">
+            <div class="card-header">
+                <h2 class="card-title" id="temp-title">Powerwall temperatures</h2>
+                <div class="card-note" id="temp-note"></div>
+            </div>
+            <div id="temp-body">
+                <div class="empty">Loading temperature history…</div>
+            </div>
+        </section>
+
+        <section class="card" aria-labelledby="fan-title">
+            <div class="card-header">
+                <h2 class="card-title" id="fan-title">Powerwall fans</h2>
+                <div class="card-note" id="fan-note"></div>
+            </div>
+            <div id="fan-body">
+                <div class="empty">Loading fan history…</div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+    (function () {
+        'use strict';
+
+        const DAY = 86400;
+        const ENERGY_SERIES = [
+            { key: 'solar_kwh', label: 'Solar', color: '#f0c000', total: 'solar' },
+            { key: 'home_kwh', label: 'Home', color: '#58a6ff', total: 'home' },
+            { key: 'battery_charge_kwh', label: 'Battery charge', color: '#3fb950', total: 'charge' },
+            { key: 'battery_discharge_kwh', label: 'Battery discharge', color: '#a371f7', total: 'charge' },
+            { key: 'grid_import_kwh', label: 'Grid import', color: '#f85149', total: 'import' },
+            { key: 'grid_export_kwh', label: 'Grid export', color: '#db6d28', total: 'export' },
+        ];
+        const METRIC_COLORS = {
+            pack_temp_max: '#f85149',
+            pack_temp_min: '#58a6ff',
+            shunt_temp: '#d29922',
+            inverter_ambient: '#a371f7',
+            ambient_temp: '#3fb950',
+            fan_a_rpm: '#58a6ff',
+            fan_b_rpm: '#3fb950',
+            fan_rpm: '#58a6ff',
+            fan_a_duty: '#d29922',
+            fan_b_duty: '#db6d28',
+        };
+        const DEVICE_DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3]];
+        const UNIT_KEY = 'pw_history_temp_unit';
+        const REFRESH_MS = 5 * 60 * 1000;
+
+        const state = {
+            range: '30d',
+            from: null,          // 'YYYY-MM-DD'
+            to: null,
+            gateway: '',
+            unit: 'C',
+            energyOn: new Set(['solar_kwh']),
+            tempMetricsOff: new Set(),
+            fanMode: 'fan_speed',
+            devicesOff: new Set(),
+            gatewayNames: {},
+            devicesInfo: null,
+            deviceTrend: null,
+            energyDays: [],
+        };
+
+        // ---------------------------------------------------------------
+        // Helpers
+        // ---------------------------------------------------------------
+        const $ = id => document.getElementById(id);
+        const esc = s => String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+
+        function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        function storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+
+        function pad(n) { return String(n).padStart(2, '0'); }
+        function localDay(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+        function parseDay(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
+        function addDays(s, n) { const d = parseDay(s); d.setDate(d.getDate() + n); return localDay(d); }
+        // Day strings are placed at UTC noon so day-axis labels never shift by timezone
+        function dayX(s) { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d) / 1000 + DAY / 2; }
+        function xDay(x) { const d = new Date((x - DAY / 2) * 1000); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; }
+
+        const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        function fmtDayLong(s) {
+            const d = parseDay(s);
+            return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+        }
+        function fmtTimeLong(ts) {
+            const d = new Date(ts * 1000);
+            return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+        function fmtNum(v, dp) { return v == null || !isFinite(v) ? '--' : v.toFixed(dp); }
+
+        function deviceShort(device) {
+            // "TEPOD--1707000-11-J--TG1234..." -> "TG1234..."; keep the type for context
+            const parts = String(device).split('--');
+            const kind = { TEPOD: 'Battery', TEPINV: 'Inverter', TETHC: 'Powerwall', PVAC: 'Inverter' }[parts[0]] || parts[0];
+            return parts.length > 1 ? `${kind} ${parts[parts.length - 1]}` : String(device);
+        }
+
+        function toUnit(v, unit) {
+            if (v == null) return v;
+            return unit === '°C' && state.unit === 'F' ? v * 9 / 5 + 32 : v;
+        }
+        function unitLabel(unit) { return unit === '°C' ? (state.unit === 'F' ? '°F' : '°C') : unit; }
+
+        async function getJSON(url) {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`${url} returned ${resp.status}`);
+            return resp.json();
+        }
+
+        // ---------------------------------------------------------------
+        // Range handling
+        // ---------------------------------------------------------------
+        const PRESET_DAYS = { '1d': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+
+        function applyPreset(range) {
+            state.range = range;
+            const today = localDay(new Date());
+            state.to = today;
+            state.from = range === 'all' ? null : addDays(today, -(PRESET_DAYS[range] - 1));
+            if (range === '1d') state.from = addDays(today, -1);
+        }
+
+        function syncControls() {
+            document.querySelectorAll('#range-presets button').forEach(b =>
+                b.setAttribute('aria-pressed', String(b.dataset.range === state.range)));
+            document.querySelectorAll('#temp-unit button').forEach(b =>
+                b.setAttribute('aria-pressed', String(b.dataset.unit === state.unit)));
+            $('from-date').value = state.from || '';
+            $('to-date').value = state.to || '';
+            $('gateway-select').value = state.gateway;
+        }
+
+        function writeUrl() {
+            const p = new URLSearchParams();
+            if (state.range !== 'custom') p.set('range', state.range);
+            else { if (state.from) p.set('from', state.from); if (state.to) p.set('to', state.to); }
+            if (state.gateway) p.set('gateway', state.gateway);
+            const q = p.toString();
+            history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
+        }
+
+        function readUrl() {
+            const p = new URLSearchParams(location.search);
+            const range = p.get('range');
+            const valid = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+            if (valid(p.get('from')) || valid(p.get('to'))) {
+                state.range = 'custom';
+                state.from = valid(p.get('from')) ? p.get('from') : null;
+                state.to = valid(p.get('to')) ? p.get('to') : localDay(new Date());
+            } else {
+                applyPreset(range && (range in PRESET_DAYS || range === 'all') ? range : '30d');
+            }
+            state.gateway = p.get('gateway') || '';
+            const unit = storageGet(UNIT_KEY);
+            state.unit = unit === 'F' ? 'F' : 'C';
+        }
+
+        // Epoch window for device history: local midnight of From .. end of To (capped at now)
+        function epochWindow() {
+            const now = Date.now() / 1000;
+            // Energy is per day, so "24h" shows yesterday and today; device
+            // history can show a true rolling 24 hours
+            if (state.range === '1d') return { start: now - DAY, end: now + 60 };
+            let start;
+            if (state.from) start = parseDay(state.from).getTime() / 1000;
+            else {
+                const days = (state.devicesInfo?.series || [])
+                    .map(s => s.first_day).filter(Boolean).sort();
+                const firstTs = (state.devicesInfo?.series || [])
+                    .map(s => s.first_ts).filter(v => v != null).sort((a, b) => a - b)[0];
+                start = days.length ? parseDay(days[0]).getTime() / 1000 : (firstTs || now - DAY);
+            }
+            const endDay = state.to ? parseDay(state.to).getTime() / 1000 + DAY : now;
+            return { start, end: Math.min(endDay, now + 60) };
+        }
+
+        // ---------------------------------------------------------------
+        // Chart (canvas, no dependencies — the page must work offline)
+        // ---------------------------------------------------------------
+        const charts = new Map();
+
+        function niceStep(range, target) {
+            const raw = range / Math.max(1, target);
+            const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+            const n = raw / mag;
+            return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+        }
+
+        function xTicks(cfg, plotW) {
+            const span = cfg.xMax - cfg.xMin;
+            const maxTicks = Math.max(2, Math.floor(plotW / 80));
+            const ticks = [];
+            if (cfg.xMode === 'day') {
+                const days = span / DAY;
+                const step = [1, 2, 7, 14, 30, 61, 91, 182, 365].find(s => days / s <= maxTicks) || 730;
+                const first = Math.ceil((cfg.xMin - DAY / 2) / DAY) * DAY + DAY / 2;
+                for (let x = first; x <= cfg.xMax; x += step * DAY) {
+                    const d = new Date((x - DAY / 2) * 1000);
+                    const label = days > 400
+                        ? `${MONTHS[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`
+                        : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+                    ticks.push({ x, label });
+                }
+            } else {
+                const steps = [300, 900, 1800, 3600, 7200, 10800, 21600, 43200, DAY, 2 * DAY, 7 * DAY, 14 * DAY];
+                const step = steps.find(s => span / s <= maxTicks) || 30 * DAY;
+                const offset = -new Date(cfg.xMin * 1000).getTimezoneOffset() * 60;
+                const first = Math.ceil((cfg.xMin + offset) / step) * step - offset;
+                for (let x = first; x <= cfg.xMax; x += step) {
+                    const d = new Date(x * 1000);
+                    const midnight = d.getHours() === 0 && d.getMinutes() === 0;
+                    const label = step >= DAY || midnight
+                        ? `${MONTHS[d.getMonth()]} ${d.getDate()}`
+                        : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    ticks.push({ x, label });
+                }
+            }
+            return ticks;
+        }
+
+        function drawChart(canvas, cfg) {
+            const wrap = canvas.parentElement;
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.clientWidth;
+            const h = canvas.clientHeight;
+            if (!w || !h) return;
+            canvas.width = Math.round(w * dpr);
+            canvas.height = Math.round(h * dpr);
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, w, h);
+
+            const pad = { l: 52, r: 14, t: cfg.yUnit ? 22 : 10, b: 26 };
+            const plotW = w - pad.l - pad.r;
+            const plotH = h - pad.t - pad.b;
+            const series = cfg.series.filter(s => s.visible !== false && s.points.length);
+            // Min/max bands turn to mud when many series overlap; keep them for 1-2 lines
+            const showBands = series.filter(s => s.band).length <= 2;
+
+            // Y range
+            let lo = Infinity, hi = -Infinity;
+            for (const s of series) for (const p of s.points) {
+                for (const v of [p.y, p.lo, p.hi]) if (v != null && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+            }
+            if (!isFinite(lo)) { lo = 0; hi = 1; }
+            if (cfg.zeroBased) { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+            if (hi - lo < 1e-9) { hi += 1; if (!cfg.zeroBased) lo -= 1; }
+            if (!cfg.zeroBased) { const padY = (hi - lo) * 0.08; lo -= padY; hi += padY; }
+            const step = niceStep(hi - lo, Math.max(3, Math.floor(plotH / 55)));
+            lo = Math.floor(lo / step) * step;
+            hi = Math.ceil(hi / step) * step;
+
+            const X = x => pad.l + (x - cfg.xMin) / (cfg.xMax - cfg.xMin) * plotW;
+            const Y = y => pad.t + (1 - (y - lo) / (hi - lo)) * plotH;
+
+            // Grid + axes
+            ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillStyle = '#8b949e';
+            ctx.strokeStyle = 'rgba(48, 54, 61, 0.8)';
+            ctx.lineWidth = 1;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            const dp = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
+            for (let v = lo; v <= hi + step / 2; v += step) {
+                const y = Math.round(Y(v)) + 0.5;
+                ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
+                ctx.fillText(v.toFixed(dp), pad.l - 6, y);
+            }
+            if (cfg.yUnit) {
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'top';
+                ctx.fillText(cfg.yUnit, 4, 0);
+            }
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            for (const t of xTicks(cfg, plotW)) {
+                const x = X(t.x);
+                if (x < pad.l - 1 || x > w - pad.r + 1) continue;
+                ctx.fillText(t.label, Math.min(Math.max(x, pad.l + 20), w - pad.r - 20), h - pad.b + 7);
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(pad.l, pad.t - 2, plotW, plotH + 4);
+            ctx.clip();
+
+            // Bars (grouped per slot); fall back to lines when too thin to read
+            const bars = series.filter(s => s.type === 'bar');
+            const slotPx = cfg.slot ? cfg.slot / (cfg.xMax - cfg.xMin) * plotW : 0;
+            const barW = bars.length ? slotPx * 0.8 / bars.length : 0;
+            const barsAsLines = bars.length && barW < 2;
+            if (bars.length && !barsAsLines) {
+                const zeroY = Y(Math.max(lo, 0));
+                bars.forEach((s, i) => {
+                    ctx.fillStyle = s.color;
+                    for (const p of s.points) {
+                        if (p.y == null) continue;
+                        const x = X(p.x) - slotPx * 0.4 + i * barW;
+                        const y = Y(p.y);
+                        ctx.fillRect(x, Math.min(y, zeroY), Math.max(1, barW - (barW > 4 ? 1 : 0)), Math.abs(zeroY - y) || 1);
+                    }
+                });
+            }
+
+            // Lines (with optional min/max band)
+            const lines = series.filter(s => s.type !== 'bar' || barsAsLines);
+            const gapLimit = (cfg.gap || cfg.slot || 0) * 2.5;
+            for (const s of lines) {
+                const segments = [];
+                let seg = [];
+                for (const p of s.points) {
+                    if (p.y == null) { if (seg.length) segments.push(seg); seg = []; continue; }
+                    if (seg.length && gapLimit && p.x - seg[seg.length - 1].x > gapLimit) { segments.push(seg); seg = []; }
+                    seg.push(p);
+                }
+                if (seg.length) segments.push(seg);
+                if (s.band && showBands) {
+                    ctx.fillStyle = s.color + '26';
+                    for (const g of segments) {
+                        if (g.length < 2 || g[0].lo == null) continue;
+                        ctx.beginPath();
+                        g.forEach((p, i) => i ? ctx.lineTo(X(p.x), Y(p.hi)) : ctx.moveTo(X(p.x), Y(p.hi)));
+                        for (let i = g.length - 1; i >= 0; i--) ctx.lineTo(X(g[i].x), Y(g[i].lo));
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+                ctx.strokeStyle = s.color;
+                ctx.lineWidth = 1.75;
+                ctx.setLineDash(s.dash || []);
+                for (const g of segments) {
+                    ctx.beginPath();
+                    g.forEach((p, i) => i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y)));
+                    ctx.stroke();
+                    if (g.length === 1) {
+                        ctx.fillStyle = s.color;
+                        ctx.beginPath(); ctx.arc(X(g[0].x), Y(g[0].y), 2.5, 0, Math.PI * 2); ctx.fill();
+                    }
+                }
+                ctx.setLineDash([]);
+            }
+
+            // Hover crosshair
+            const st = charts.get(canvas);
+            if (st && st.hoverX != null) {
+                ctx.strokeStyle = 'rgba(230, 237, 243, 0.35)';
+                ctx.lineWidth = 1;
+                const hx = Math.round(X(st.hoverX)) + 0.5;
+                ctx.beginPath(); ctx.moveTo(hx, pad.t); ctx.lineTo(hx, pad.t + plotH); ctx.stroke();
+            }
+            ctx.restore();
+
+            // Sorted union of x values for hover lookup
+            const xs = Array.from(new Set(series.flatMap(s => s.points.filter(p => p.y != null).map(p => p.x)))).sort((a, b) => a - b);
+            const tipSeries = cfg.tooltipAll ? cfg.series.filter(s => s.points.length) : series;
+            charts.set(canvas, { cfg, X, pad, plotW, xs, series: tipSeries, hoverX: st ? st.hoverX : null, wrap });
+        }
+
+        function nearestX(xs, x) {
+            if (!xs.length) return null;
+            let a = 0, b = xs.length - 1;
+            while (b - a > 1) { const m = (a + b) >> 1; if (xs[m] < x) a = m; else b = m; }
+            return Math.abs(xs[a] - x) <= Math.abs(xs[b] - x) ? xs[a] : xs[b];
+        }
+
+        function attachHover(canvas, tooltip) {
+            function move(ev) {
+                const st = charts.get(canvas);
+                if (!st || !st.xs.length) return;
+                const rect = canvas.getBoundingClientRect();
+                const px = ev.clientX - rect.left;
+                const x = st.cfg.xMin + (px - st.pad.l) / st.plotW * (st.cfg.xMax - st.cfg.xMin);
+                const hx = nearestX(st.xs, x);
+                st.hoverX = hx;
+                drawChart(canvas, st.cfg);
+                tooltip.replaceChildren();
+                const title = document.createElement('div');
+                title.className = 'tt-title';
+                title.textContent = st.cfg.xMode === 'day' ? fmtDayLong(xDay(hx)) : fmtTimeLong(hx);
+                tooltip.appendChild(title);
+                for (const s of st.series) {
+                    const p = s.points.find(q => q.x === hx);
+                    if (!p || p.y == null) continue;
+                    const hiddenSeries = s.visible === false;
+                    const row = document.createElement('div');
+                    row.className = 'tt-row';
+                    const dot = document.createElement('span');
+                    dot.className = 'dot';
+                    dot.style.background = s.color;
+                    const label = document.createElement('span');
+                    label.textContent = s.label;
+                    const v = document.createElement('span');
+                    v.className = 'v';
+                    v.textContent = st.cfg.formatValue(p, s);
+                    if (hiddenSeries) row.style.opacity = '0.6';
+                    row.append(dot, label, v);
+                    tooltip.appendChild(row);
+                }
+                tooltip.hidden = false;
+                const wrapRect = st.wrap.getBoundingClientRect();
+                const tipW = tooltip.offsetWidth;
+                let left = st.X(hx) + 14;
+                if (left + tipW > wrapRect.width) left = st.X(hx) - tipW - 14;
+                tooltip.style.left = Math.max(0, left) + 'px';
+                tooltip.style.top = '8px';
+            }
+            function leave() {
+                const st = charts.get(canvas);
+                tooltip.hidden = true;
+                if (st) { st.hoverX = null; drawChart(canvas, st.cfg); }
+            }
+            canvas.addEventListener('pointermove', move);
+            canvas.addEventListener('pointerdown', move);
+            canvas.addEventListener('pointerleave', leave);
+        }
+
+        function makeChart(container, short) {
+            const wrap = document.createElement('div');
+            wrap.className = 'chart-wrap' + (short ? ' short' : '');
+            const canvas = document.createElement('canvas');
+            canvas.setAttribute('role', 'img');
+            const tooltip = document.createElement('div');
+            tooltip.className = 'tooltip';
+            tooltip.hidden = true;
+            wrap.append(canvas, tooltip);
+            container.appendChild(wrap);
+            attachHover(canvas, tooltip);
+            return canvas;
+        }
+
+        function redrawAll() {
+            for (const [canvas, st] of charts) {
+                if (!canvas.isConnected) { charts.delete(canvas); continue; }
+                drawChart(canvas, st.cfg);
+            }
+        }
+        let resizeTimer;
+        window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redrawAll, 100); });
+
+        function chipButton(label, color, pressed, onToggle, lineStyle) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'chip';
+            b.setAttribute('aria-pressed', String(pressed));
+            const sw = document.createElement('span');
+            sw.className = 'swatch' + (lineStyle ? ' line' : '');
+            sw.style.setProperty('--swatch', color);
+            b.append(sw, document.createTextNode(label));
+            b.addEventListener('click', () => {
+                const now = b.getAttribute('aria-pressed') !== 'true';
+                b.setAttribute('aria-pressed', String(now));
+                onToggle(now);
+            });
+            return b;
+        }
+
+        // ---------------------------------------------------------------
+        // Daily energy
+        // ---------------------------------------------------------------
+        async function loadEnergy() {
+            const body = $('energy-body');
+            const p = new URLSearchParams();
+            if (state.from) p.set('start', state.from);
+            p.set('end', state.to || localDay(new Date()));
+            if (state.gateway) p.set('gateway', state.gateway);
+            let data;
+            try {
+                data = await getJSON('/api/timeseries/daily?' + p.toString());
+            } catch (e) {
+                body.innerHTML = `<div class="empty error">Couldn't load daily energy: ${esc(e.message)}</div>`;
+                return;
+            }
+            if (!data.enabled) {
+                body.innerHTML = '<div class="empty">Time-series storage is turned off. Remove <code>PW_TIMESERIES_RETENTION=-1</code> to start recording daily energy.</div>';
+                $('energy-note').textContent = '';
+                return;
+            }
+            // Sum gateways per day (one gateway when filtered), oldest first
+            state.energyDays = (data.days || []).map(d => {
+                const row = { day: d.day };
+                for (const s of ENERGY_SERIES) {
+                    row[s.key] = Object.values(d.gateways || {}).reduce((a, g) => a + (g[s.key] || 0), 0);
+                }
+                return row;
+            }).reverse();
+            renderEnergy();
+        }
+
+        function renderEnergy() {
+            const body = $('energy-body');
+            const rows = state.energyDays;
+            body.replaceChildren();
+            if (!rows.length) {
+                body.innerHTML = '<div class="empty">No daily energy recorded in this range. Totals start accumulating from the first poll after the server starts; pick a wider range or check back tomorrow.</div>';
+                $('energy-note').textContent = '';
+                return;
+            }
+            const first = state.from || rows[0].day;
+            const last = state.to || rows[rows.length - 1].day;
+            const dayCount = Math.round((dayX(last) - dayX(first)) / DAY) + 1;
+            $('energy-note').textContent = `${rows.length} of ${dayCount} days recorded · kWh per local day`;
+
+            // Range totals
+            const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
+            const solar = sum('solar_kwh'), home = sum('home_kwh');
+            const imp = sum('grid_import_kwh'), exp = sum('grid_export_kwh');
+            const chg = sum('battery_charge_kwh'), dchg = sum('battery_discharge_kwh');
+            const best = rows.reduce((b, r) => (r.solar_kwh > (b?.solar_kwh ?? -1) ? r : b), null);
+            const selfPowered = home > 0 ? Math.max(0, Math.min(100, (1 - imp / home) * 100)) : null;
+            const totals = document.createElement('div');
+            totals.className = 'totals';
+            const tiles = [
+                ['solar', 'Solar generated', `${fmtNum(solar, 1)} kWh`, `${fmtNum(solar / rows.length, 1)} kWh/day average`],
+                ['solar', 'Best solar day', best ? `${fmtNum(best.solar_kwh, 1)} kWh` : '--', best ? fmtDayLong(best.day) : ''],
+                ['home', 'Home used', `${fmtNum(home, 1)} kWh`, `${fmtNum(home / rows.length, 1)} kWh/day average`],
+                ['charge', 'Battery in / out', `${fmtNum(chg, 1)} / ${fmtNum(dchg, 1)}`, 'kWh charged / discharged'],
+                ['import', 'Grid import', `${fmtNum(imp, 1)} kWh`, ''],
+                ['export', 'Grid export', `${fmtNum(exp, 1)} kWh`, ''],
+                ['self', 'Self-powered', selfPowered == null ? '--' : `${fmtNum(selfPowered, 0)}%`, 'of home use not from the grid'],
+            ];
+            for (const [cls, label, value, sub] of tiles) {
+                const t = document.createElement('div');
+                t.className = `total ${cls}`;
+                t.innerHTML = `<div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div>`;
+                totals.appendChild(t);
+            }
+            body.appendChild(totals);
+
+            // Toggles
+            const chips = document.createElement('div');
+            chips.className = 'chips';
+            body.appendChild(chips);
+            const canvas = makeChart(body, false);
+            canvas.setAttribute('aria-label', 'Daily energy chart');
+
+            const byDay = new Map(rows.map(r => [r.day, r]));
+            const days = [];
+            for (let d = first, i = 0; d <= last && i < 5000; d = addDays(d, 1), i++) days.push(d);
+            const cfg = {
+                xMode: 'day',
+                xMin: dayX(first) - DAY / 2,
+                xMax: dayX(last) + DAY / 2,
+                slot: DAY,
+                gap: DAY,
+                zeroBased: true,
+                tooltipAll: true,
+                yUnit: 'kWh',
+                series: ENERGY_SERIES.map(s => ({
+                    id: s.key,
+                    label: s.label,
+                    color: s.color,
+                    type: 'bar',
+                    visible: state.energyOn.has(s.key),
+                    points: days.map(d => ({ x: dayX(d), y: byDay.has(d) ? byDay.get(d)[s.key] : null })),
+                })),
+                formatValue: p => `${fmtNum(p.y, 2)} kWh`,
+            };
+            for (const s of ENERGY_SERIES) {
+                chips.appendChild(chipButton(s.label, s.color, state.energyOn.has(s.key), on => {
+                    if (on) state.energyOn.add(s.key); else state.energyOn.delete(s.key);
+                    cfg.series.find(x => x.id === s.key).visible = on;
+                    drawChart(canvas, cfg);
+                }));
+            }
+            drawChart(canvas, cfg);
+
+            // Table + CSV
+            const actions = document.createElement('div');
+            actions.className = 'table-actions';
+            const showBtn = document.createElement('button');
+            showBtn.type = 'button';
+            showBtn.className = 'btn';
+            showBtn.textContent = 'Show table';
+            showBtn.setAttribute('aria-expanded', 'false');
+            const csvBtn = document.createElement('button');
+            csvBtn.type = 'button';
+            csvBtn.className = 'btn';
+            csvBtn.textContent = 'Download CSV';
+            actions.append(showBtn, csvBtn);
+            body.appendChild(actions);
+            const scroll = document.createElement('div');
+            scroll.className = 'table-scroll';
+            scroll.hidden = true;
+            body.appendChild(scroll);
+            showBtn.addEventListener('click', () => {
+                const open = scroll.hidden;
+                if (open && !scroll.firstChild) {
+                    let html = '<table><thead><tr><th>Day</th>' +
+                        ENERGY_SERIES.map(s => `<th>${esc(s.label)}</th>`).join('') + '</tr></thead><tbody>';
+                    for (const r of rows.slice().reverse()) {
+                        html += `<tr><td>${esc(r.day)}</td>` + ENERGY_SERIES.map(s => `<td>${fmtNum(r[s.key], 2)}</td>`).join('') + '</tr>';
+                    }
+                    scroll.innerHTML = html + '</tbody></table>';
+                }
+                scroll.hidden = !open;
+                showBtn.textContent = open ? 'Hide table' : 'Show table';
+                showBtn.setAttribute('aria-expanded', String(open));
+            });
+            csvBtn.addEventListener('click', () => {
+                const lines = ['day,' + ENERGY_SERIES.map(s => s.key).join(',')];
+                for (const r of rows) lines.push(r.day + ',' + ENERGY_SERIES.map(s => (r[s.key] || 0).toFixed(3)).join(','));
+                const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/csv' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `daily-energy_${state.gateway || 'all'}_${first}_${last}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+            });
+        }
+
+        // ---------------------------------------------------------------
+        // Temperatures and fans
+        // ---------------------------------------------------------------
+        async function loadDevices() {
+            const p = new URLSearchParams();
+            if (state.gateway) p.set('gateway', state.gateway);
+            try {
+                state.devicesInfo = await getJSON('/api/timeseries/devices?' + p.toString());
+            } catch (e) {
+                state.devicesInfo = { error: e.message };
+            }
+        }
+
+        async function loadDeviceTrend() {
+            const info = state.devicesInfo || {};
+            if (info.error || !info.enabled || info.device_enabled === false || !(info.series || []).length) {
+                state.deviceTrend = null;
+                renderDeviceCards();
+                return;
+            }
+            const { start, end } = epochWindow();
+            const p = new URLSearchParams({ start: String(Math.floor(start)), end: String(Math.ceil(end)) });
+            if (state.gateway) p.set('gateway', state.gateway);
+            try {
+                state.deviceTrend = await getJSON('/api/timeseries/device_trend?' + p.toString());
+                state.deviceTrend.window = { start, end };
+            } catch (e) {
+                state.deviceTrend = { error: e.message };
+            }
+            renderDeviceCards();
+        }
+
+        function deviceEmpty(kind) {
+            const info = state.devicesInfo || {};
+            if (info.error) return `Couldn't load ${kind} history: ${esc(info.error)}`;
+            if (info.enabled === false) return 'Time-series storage is turned off. Remove <code>PW_TIMESERIES_RETENTION=-1</code> to record history.';
+            if (info.device_enabled === false) return `${kind[0].toUpperCase() + kind.slice(1)} recording is turned off. Remove <code>PW_TIMESERIES_DEVICE_RETENTION=-1</code> to record it.`;
+            if (kind === 'temperature') {
+                return 'No temperature history yet. Powerwall 3 temperatures need a TEDAPI connection (Wi-Fi or wired v1r); recording starts within a minute of the first poll.';
+            }
+            return 'No fan history yet. Fan readings need a TEDAPI connection; recording starts within a minute of the first poll.';
+        }
+
+        function renderDeviceCards() {
+            renderDeviceCard('temperature', $('temp-body'), $('temp-note'), ['temperature']);
+            renderDeviceCard('fan', $('fan-body'), $('fan-note'), [state.fanMode]);
+        }
+
+        function renderDeviceCard(kind, body, note, groups) {
+            body.replaceChildren();
+            note.textContent = '';
+            const trend = state.deviceTrend;
+            const metricsInfo = (state.devicesInfo || {}).metrics || {};
+            const allGroups = kind === 'fan' ? ['fan_speed', 'fan_duty'] : ['temperature'];
+            const inKind = s => allGroups.includes(metricsInfo[s.metric]?.group);
+
+            if (!trend || trend.error) {
+                body.innerHTML = `<div class="empty">${trend && trend.error ? `Couldn't load ${kind} history: ${esc(trend.error)}` : deviceEmpty(kind)}</div>`;
+                return;
+            }
+            const kindSeries = (trend.series || []).filter(inKind);
+            if (!kindSeries.length) {
+                body.innerHTML = `<div class="empty">${deviceEmpty(kind)}</div>`;
+                return;
+            }
+            const daily = trend.resolution === 'daily';
+            const retention = (state.devicesInfo || {}).retentionText;
+            note.textContent = daily
+                ? `One point per day: daily average, hover for the day's low–high${retention ? ` · minute-level detail kept ${retention}` : ''}`
+                : `Averaged over ${Math.round((trend.bucket_seconds || 60) / 60)}-minute steps`;
+
+            const controls = document.createElement('div');
+            controls.className = 'chips';
+            body.appendChild(controls);
+
+            if (kind === 'fan') {
+                const seg = document.createElement('div');
+                seg.className = 'segmented';
+                seg.setAttribute('role', 'group');
+                seg.setAttribute('aria-label', 'Fan measurement');
+                for (const [g, label] of [['fan_speed', 'Speed (rpm)'], ['fan_duty', 'Duty cycle (%)']]) {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = label;
+                    b.setAttribute('aria-pressed', String(state.fanMode === g));
+                    b.addEventListener('click', () => { state.fanMode = g; renderDeviceCards(); });
+                    seg.appendChild(b);
+                }
+                controls.appendChild(seg);
+            }
+
+            const shown = kindSeries.filter(s => groups.includes(metricsInfo[s.metric]?.group));
+            const metrics = Array.from(new Set(shown.map(s => s.metric)));
+            const devices = Array.from(new Set(shown.map(s => `${s.gateway}|${s.device}`)));
+            const gateways = new Set(shown.map(s => s.gateway));
+
+            let chartCanvas = null;
+            let cfg = null;
+
+            if (kind === 'temperature' && metrics.length > 1) {
+                const lab = document.createElement('span');
+                lab.className = 'chip-label';
+                lab.textContent = 'Show';
+                controls.appendChild(lab);
+                for (const m of metrics) {
+                    controls.appendChild(chipButton(metricsInfo[m]?.label || m, METRIC_COLORS[m] || '#8b949e', !state.tempMetricsOff.has(m), on => {
+                        if (on) state.tempMetricsOff.delete(m); else state.tempMetricsOff.add(m);
+                        updateVisibility();
+                    }, true));
+                }
+            }
+            if (devices.length > 1) {
+                const lab = document.createElement('span');
+                lab.className = 'chip-label';
+                lab.textContent = kind === 'fan' ? 'Inverters' : 'Units';
+                controls.appendChild(lab);
+                devices.forEach((key, i) => {
+                    const [gw, dev] = key.split('|');
+                    const name = deviceShort(dev) + (gateways.size > 1 ? ` (${state.gatewayNames[gw] || gw})` : '');
+                    const b = chipButton(name, '#8b949e', !state.devicesOff.has(key), on => {
+                        if (on) state.devicesOff.delete(key); else state.devicesOff.add(key);
+                        updateVisibility();
+                    }, true);
+                    const sw = b.querySelector('.swatch');
+                    const dash = DEVICE_DASHES[i % DEVICE_DASHES.length];
+                    sw.style.background = dash.length
+                        ? `repeating-linear-gradient(90deg, #8b949e 0 ${dash[0] / 2}px, transparent ${dash[0] / 2}px ${(dash[0] + dash[1]) / 2}px)`
+                        : '#8b949e';
+                    controls.appendChild(b);
+                });
+            }
+
+            const unit = unitLabel(shown[0]?.unit || '');
+            const dp = unit === 'rpm' ? 0 : 1;
+            const win = trend.window;
+            const series = shown.map(s => {
+                const key = `${s.gateway}|${s.device}`;
+                const devIdx = devices.indexOf(key);
+                const label = (metrics.length > 1 || kind === 'fan' ? s.label : '') +
+                    (devices.length > 1 ? `${metrics.length > 1 || kind === 'fan' ? ' · ' : ''}${deviceShort(s.device)}` : '') || s.label;
+                return {
+                    id: `${key}|${s.metric}`,
+                    metric: s.metric,
+                    deviceKey: key,
+                    label,
+                    color: METRIC_COLORS[s.metric] || '#8b949e',
+                    dash: DEVICE_DASHES[devIdx % DEVICE_DASHES.length],
+                    type: 'line',
+                    band: daily,
+                    visible: !state.tempMetricsOff.has(s.metric) && !state.devicesOff.has(key),
+                    unit: s.unit,
+                    points: s.points.map(p => ({
+                        x: daily ? dayX(p.day) : p.ts + (trend.bucket_seconds || 60) / 2,
+                        y: toUnit(p.avg, s.unit),
+                        lo: toUnit(p.min, s.unit),
+                        hi: toUnit(p.max, s.unit),
+                    })),
+                };
+            });
+            let xMin, xMax;
+            if (daily) {
+                const firstDay = localDay(new Date(win.start * 1000));
+                const lastDay = localDay(new Date(Math.min(win.end, Date.now() / 1000) * 1000));
+                xMin = dayX(firstDay) - DAY / 2;
+                xMax = dayX(lastDay) + DAY / 2;
+            } else {
+                xMin = win.start;
+                xMax = Math.min(win.end, Date.now() / 1000);
+            }
+            cfg = {
+                xMode: daily ? 'day' : 'time',
+                xMin,
+                xMax: Math.max(xMax, xMin + 60),
+                gap: daily ? DAY : (trend.bucket_seconds || 60),
+                zeroBased: kind === 'fan',
+                yUnit: unit,
+                series,
+                formatValue: p => daily
+                    ? `${fmtNum(p.y, dp)} (${fmtNum(p.lo, dp)}–${fmtNum(p.hi, dp)}) ${unit}`
+                    : `${fmtNum(p.y, dp)} ${unit}`,
+            };
+            chartCanvas = makeChart(body, true);
+            chartCanvas.setAttribute('aria-label', kind === 'fan' ? 'Fan history chart' : 'Temperature history chart');
+            drawChart(chartCanvas, cfg);
+
+            // Min / avg / max over the range
+            const statsWrap = document.createElement('div');
+            statsWrap.className = 'table-scroll stats-table';
+            body.appendChild(statsWrap);
+
+            function renderStats() {
+                let html = `<table><thead><tr><th>Series</th><th>Low</th><th>Average</th><th>High</th><th>Latest</th></tr></thead><tbody>`;
+                let any = false;
+                for (const s of series) {
+                    if (!s.visible) continue;
+                    const pts = s.points.filter(p => p.y != null);
+                    if (!pts.length) continue;
+                    any = true;
+                    let lo = Infinity, hi = -Infinity, loX = null, hiX = null, total = 0;
+                    for (const p of pts) {
+                        const l = p.lo ?? p.y, h = p.hi ?? p.y;
+                        if (l < lo) { lo = l; loX = p.x; }
+                        if (h > hi) { hi = h; hiX = p.x; }
+                        total += p.y;
+                    }
+                    const when = x => daily ? xDay(x) : fmtTimeLong(x - (trend.bucket_seconds || 60) / 2);
+                    html += `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.label || s.metric)}</td>` +
+                        `<td title="${esc(when(loX))}">${fmtNum(lo, dp)} ${esc(unit)}</td>` +
+                        `<td>${fmtNum(total / pts.length, dp)} ${esc(unit)}</td>` +
+                        `<td title="${esc(when(hiX))}">${fmtNum(hi, dp)} ${esc(unit)}</td>` +
+                        `<td>${fmtNum(pts[pts.length - 1].y, dp)} ${esc(unit)}</td></tr>`;
+                }
+                statsWrap.innerHTML = any ? html + '</tbody></table>' : '';
+            }
+            function updateVisibility() {
+                for (const s of series) s.visible = !state.tempMetricsOff.has(s.metric) && !state.devicesOff.has(s.deviceKey);
+                drawChart(chartCanvas, cfg);
+                renderStats();
+            }
+            renderStats();
+        }
+
+        // ---------------------------------------------------------------
+        // Wiring
+        // ---------------------------------------------------------------
+        function fmtDuration(sec) {
+            if (sec == null || sec < 0) return null;
+            if (sec === 0) return 'indefinitely';
+            if (sec % DAY === 0) return `${sec / DAY} day${sec === DAY ? '' : 's'}`;
+            if (sec % 3600 === 0) return `${sec / 3600} hours`;
+            return `${Math.round(sec / 60)} minutes`;
+        }
+
+        async function loadGateways() {
+            try {
+                const [gws, status] = await Promise.all([
+                    getJSON('/api/gateways/').catch(() => ({})),
+                    getJSON('/api/timeseries/status').catch(() => ({})),
+                ]);
+                const ids = new Set([...Object.keys(gws || {}), ...(status.gateways || [])]);
+                const sel = $('gateway-select');
+                for (const id of ids) {
+                    state.gatewayNames[id] = gws?.[id]?.gateway?.name || id;
+                }
+                if (ids.size > 1 || (state.gateway && !ids.has(state.gateway))) {
+                    for (const id of ids) {
+                        const o = document.createElement('option');
+                        o.value = id;
+                        o.textContent = state.gatewayNames[id];
+                        sel.appendChild(o);
+                    }
+                } else {
+                    sel.closest('.control-group').hidden = true;
+                }
+                state.retentionText = fmtDuration(status.device_retention_seconds);
+            } catch (e) { /* selector is optional */ }
+        }
+
+        let loading = 0;
+        async function reload(devicesToo) {
+            const token = ++loading;
+            writeUrl();
+            syncControls();
+            const energy = loadEnergy();
+            if (devicesToo || !state.devicesInfo) await loadDevices();
+            if (token !== loading) return;
+            if (state.devicesInfo) state.devicesInfo.retentionText = state.retentionText;
+            await Promise.all([energy, loadDeviceTrend()]);
+        }
+
+        document.querySelectorAll('#range-presets button').forEach(b => b.addEventListener('click', () => {
+            applyPreset(b.dataset.range);
+            reload(false);
+        }));
+        function onDateChange() {
+            const from = $('from-date').value || null;
+            const to = $('to-date').value || localDay(new Date());
+            state.range = 'custom';
+            state.from = from && from > to ? to : from;
+            state.to = to;
+            reload(false);
+        }
+        $('from-date').addEventListener('change', onDateChange);
+        $('to-date').addEventListener('change', onDateChange);
+        $('gateway-select').addEventListener('change', e => {
+            state.gateway = e.target.value;
+            state.devicesOff.clear();
+            reload(true);
+        });
+        document.querySelectorAll('#temp-unit button').forEach(b => b.addEventListener('click', () => {
+            state.unit = b.dataset.unit;
+            storageSet(UNIT_KEY, state.unit);
+            syncControls();
+            renderDeviceCards();
+        }));
+
+        // Refresh while the range includes today
+        setInterval(() => {
+            if (document.hidden) return;
+            if (!state.to || state.to >= localDay(new Date())) {
+                if (state.range !== 'custom') applyPreset(state.range);
+                reload(true);
+            }
+        }, REFRESH_MS);
+
+        readUrl();
+        syncControls();
+        loadGateways().then(() => reload(true));
+    })();
+    </script>
+</body>
+</html>

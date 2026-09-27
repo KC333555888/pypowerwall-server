@@ -24,6 +24,23 @@ Architecture:
     per gateway so energy accumulation resumes exactly where it left off
     after a restart, without double counting.
 
+Device signals (Powerwall temperatures and fans):
+    Per-device readings (battery pack max/min, shunt and inverter ambient
+    temperatures; fan speed and duty cycle) are stored as generic series so
+    a new signal needs only an entry in DEVICE_SIGNALS, no schema change:
+
+    - ``device_series``  one row per (gateway, device block, metric), e.g.
+      ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
+    - ``device_samples`` (series_id, ts, value), recorded at most every
+      PW_TIMESERIES_DEVICE_INTERVAL (default 60s; these signals move
+      slowly) and pruned to PW_TIMESERIES_DEVICE_RETENTION (default 30d).
+    - ``device_daily``   per series per gateway-local day: min, max, sum and
+      count (so the mean), kept like daily_energy under
+      PW_TIMESERIES_DAILY_RETENTION. Long-range history reads this table.
+
+    At 60s a Powerwall 3 records 8 series (~11.5k rows/day, roughly
+    0.4 MB/day on disk), so the 30-day default stays around 12 MB per unit.
+
 Energy integration:
     Trapezoidal integration between consecutive samples:
         kWh = (P0 + P1) / 2 * dt / 3_600_000   (P in watts, dt in seconds)
@@ -49,6 +66,12 @@ Environment Variables:
     PW_TIMESERIES_DAILY_RETENTION Daily aggregate retention (default "0" =
                                   unlimited). One row/day/gateway is tiny,
                                   so unlimited is a sensible default.
+    PW_TIMESERIES_DEVICE_RETENTION
+                                  Device signal (temperature/fan) sample
+                                  retention (default "30d"). "0" = unlimited,
+                                  "-1" = do not record device signals.
+    PW_TIMESERIES_DEVICE_INTERVAL Minimum seconds between device signal
+                                  samples per gateway (default "60s").
     PW_TIMESERIES_PATH            SQLite file path (default "/data/timeseries.db"
                                   when /data exists — e.g. the Docker image —
                                   otherwise "data/timeseries.db" relative to
@@ -68,7 +91,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -98,6 +121,90 @@ MAINTENANCE_INTERVAL = 60.0
 
 # Minimum seconds between repeated write-failure warnings.
 _FAILURE_WARN_INTERVAL = 300.0
+
+# Device signals recorded as time series: vitals / fan_speeds signal name ->
+# metric id. Blocks are the pypowerwall device keys (TEPOD--, TEPINV--,
+# TETHC--, PVAC--), so each Powerwall unit gets its own series.
+# PCH_heatsinkTemp is deliberately absent: it reads a constant 45.45 °C on
+# current PW3 firmware.
+DEVICE_SIGNALS: Dict[str, str] = {
+    # Powerwall 3 battery (TEPOD blocks)
+    "HVP_PackTempMax": "pack_temp_max",
+    "HVP_PackTempMin": "pack_temp_min",
+    "HVP_ShuntTemperature": "shunt_temp",
+    # Powerwall 3 inverter (TEPINV blocks, vitals and fan_speeds)
+    "PCH_AmbientTemp": "inverter_ambient",
+    "PCH_FanSpeed_A": "fan_a_rpm",
+    "PCH_FanSpeed_B": "fan_b_rpm",
+    "PCH_FanDuty_A": "fan_a_duty",
+    "PCH_FanDuty_B": "fan_b_duty",
+    # Powerwall 2/+ (TETHC thermal controller, PVAC fan)
+    "THC_AmbientTemp": "ambient_temp",
+    "PVAC_Fan_Speed_Actual_RPM": "fan_rpm",
+}
+
+# Metric catalog for API clients: label, unit and chart group.
+DEVICE_METRICS: Dict[str, Dict[str, str]] = {
+    "pack_temp_max": {
+        "label": "Pack temp (max)",
+        "unit": "°C",
+        "group": "temperature",
+    },
+    "pack_temp_min": {
+        "label": "Pack temp (min)",
+        "unit": "°C",
+        "group": "temperature",
+    },
+    "shunt_temp": {"label": "Shunt temp", "unit": "°C", "group": "temperature"},
+    "inverter_ambient": {
+        "label": "Inverter ambient",
+        "unit": "°C",
+        "group": "temperature",
+    },
+    "ambient_temp": {"label": "Ambient temp", "unit": "°C", "group": "temperature"},
+    "fan_a_rpm": {"label": "Fan A speed", "unit": "rpm", "group": "fan_speed"},
+    "fan_b_rpm": {"label": "Fan B speed", "unit": "rpm", "group": "fan_speed"},
+    "fan_rpm": {"label": "Fan speed", "unit": "rpm", "group": "fan_speed"},
+    "fan_a_duty": {"label": "Fan A duty", "unit": "%", "group": "fan_duty"},
+    "fan_b_duty": {"label": "Fan B duty", "unit": "%", "group": "fan_duty"},
+}
+
+# Longest window (seconds) served from raw device samples; longer ranges
+# read the daily min/avg/max rollups instead.
+DEVICE_RAW_MAX_SPAN = 14 * 86400.0
+
+
+def extract_device_metrics(
+    vitals: Optional[Dict[str, Any]],
+    fan_speeds: Optional[Dict[str, Any]] = None,
+) -> Dict[Tuple[str, str], float]:
+    """Pull recordable device signals out of a poll's vitals and fan data.
+
+    Args:
+        vitals:     pypowerwall vitals() payload ({block: {signal: value}}).
+        fan_speeds: pypowerwall tedapi.get_fan_speeds() payload (same shape).
+
+    Returns:
+        {(device block, metric id): value}. Missing, None, boolean and
+        non-finite values are skipped, so an unavailable signal simply has
+        no sample rather than a fabricated zero.
+    """
+    out: Dict[Tuple[str, str], float] = {}
+    for payload in (vitals, fan_speeds):
+        if not isinstance(payload, dict):
+            continue
+        for device, signals in payload.items():
+            if not isinstance(signals, dict):
+                continue
+            for signal, metric in DEVICE_SIGNALS.items():
+                value = signals.get(signal)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                if value != value or value in (float("inf"), float("-inf")):
+                    continue
+                out[(str(device), metric)] = float(value)
+    return out
+
 
 # UTC fallback zoneinfo object for gateways with unresolvable timezones.
 _UTC = ZoneInfo("UTC")
@@ -190,6 +297,8 @@ class TimeSeriesStore:
         db_path: str,
         retention: Any = "24h",
         daily_retention: Any = "0",
+        device_retention: Any = "30d",
+        device_interval: Any = "60s",
     ):
         """Create the store.
 
@@ -203,12 +312,24 @@ class TimeSeriesStore:
             retention:       Raw sample retention (duration string or seconds).
                              -1 disables the store, 0 means unlimited.
             daily_retention: Daily aggregate retention (duration string or
-                             seconds). 0 means unlimited.
+                             seconds). 0 means unlimited. Also applies to
+                             the daily device-signal rollups.
+            device_retention: Raw device-signal (temperature/fan) sample
+                             retention. -1 stops recording device signals,
+                             0 means unlimited.
+            device_interval: Minimum seconds between device-signal samples
+                             per gateway (floor 5s).
         """
         self._db_path = self._resolve_db_path(str(db_path))
         self._retention = self._coerce(retention, "24h", "PW_TIMESERIES_RETENTION")
         self._daily_retention = self._coerce(
             daily_retention, "0", "PW_TIMESERIES_DAILY_RETENTION"
+        )
+        self._device_retention = self._coerce(
+            device_retention, "30d", "PW_TIMESERIES_DEVICE_RETENTION"
+        )
+        self._device_interval = max(
+            5, self._coerce(device_interval, "60s", "PW_TIMESERIES_DEVICE_INTERVAL")
         )
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
@@ -221,6 +342,10 @@ class TimeSeriesStore:
         # In-memory cache of the last integrated sample per gateway:
         # {gateway_id: {"ts": float, "values": {category: watts}}}
         self._state: Dict[str, Dict[str, Any]] = {}
+        # Last device-signal sample time per gateway (interval gating) and
+        # (gateway, device, metric) -> series_id lookups.
+        self._device_last: Dict[str, float] = {}
+        self._series_ids: Dict[Tuple[str, str, str], int] = {}
 
     # ------------------------------------------------------------------
     # Helpers
@@ -261,6 +386,11 @@ class TimeSeriesStore:
     def enabled(self) -> bool:
         """True when the subsystem is active (retention != -1)."""
         return self._retention != -1
+
+    @property
+    def device_enabled(self) -> bool:
+        """True when device signals (temperatures, fans) are recorded."""
+        return self.enabled and self._device_retention != -1
 
     def _ensure_executor(self) -> ThreadPoolExecutor:
         if self._executor is None:
@@ -307,6 +437,32 @@ class TimeSeriesStore:
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (gateway_id, day)
                 );
+                CREATE TABLE IF NOT EXISTS device_series (
+                    series_id INTEGER PRIMARY KEY,
+                    gateway_id TEXT NOT NULL,
+                    device TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    unit TEXT,
+                    UNIQUE (gateway_id, device, metric)
+                );
+                CREATE TABLE IF NOT EXISTS device_samples (
+                    series_id INTEGER NOT NULL,
+                    ts INTEGER NOT NULL,
+                    value REAL NOT NULL,
+                    PRIMARY KEY (series_id, ts)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_device_samples_ts
+                    ON device_samples(ts);
+                CREATE TABLE IF NOT EXISTS device_daily (
+                    series_id INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    min_value REAL NOT NULL,
+                    max_value REAL NOT NULL,
+                    sum_value REAL NOT NULL,
+                    count INTEGER NOT NULL,
+                    last_ts INTEGER NOT NULL,
+                    PRIMARY KEY (series_id, day)
+                ) WITHOUT ROWID;
                 CREATE TABLE IF NOT EXISTS integration_state (
                     gateway_id TEXT PRIMARY KEY,
                     ts REAL NOT NULL,
@@ -559,28 +715,421 @@ class TimeSeriesStore:
         return dict(row) if row else None
 
     # ------------------------------------------------------------------
+    # Device signals (temperatures, fans)
+    # ------------------------------------------------------------------
+
+    async def record_device_sample(
+        self,
+        gateway_id: str,
+        ts: float,
+        metrics: Dict[Tuple[str, str], float],
+        timezone: Optional[str] = None,
+    ) -> bool:
+        """Record one snapshot of device signals for a gateway.
+
+        Called every poll cycle; samples closer together than the device
+        interval are skipped so these slow-moving signals cost ~1 row per
+        series per minute instead of per poll.
+
+        Args:
+            gateway_id: Gateway identifier.
+            ts:         Unix timestamp of the poll.
+            metrics:    {(device block, metric id): value}, as returned by
+                        extract_device_metrics().
+            timezone:   Gateway timezone name, for the daily rollup's day.
+
+        Returns:
+            True when the snapshot was stored.
+        """
+        if not self.device_enabled or not metrics:
+            return False
+        last = self._device_last.get(gateway_id)
+        # Poll timing jitters by a second or two; don't let a 59.9s gap push
+        # a 60s interval out to the next poll.
+        slack = min(2.5, self._device_interval / 2.0)
+        if last is not None and ts - last < self._device_interval - slack:
+            return False
+        self._device_last[gateway_id] = float(ts)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._ensure_executor(),
+            partial(
+                self._record_device_sample_sync,
+                gateway_id,
+                float(ts),
+                dict(metrics),
+                timezone,
+            ),
+        )
+
+    def _series_id(
+        self,
+        conn: sqlite3.Connection,
+        gateway_id: str,
+        device: str,
+        metric: str,
+    ) -> int:
+        """Look up (creating if needed) the series id. Caller holds the lock."""
+        key = (gateway_id, device, metric)
+        series_id = self._series_ids.get(key)
+        if series_id is None:
+            unit = DEVICE_METRICS.get(metric, {}).get("unit")
+            conn.execute(
+                "INSERT OR IGNORE INTO device_series "
+                "(gateway_id, device, metric, unit) VALUES (?,?,?,?)",
+                (gateway_id, device, metric, unit),
+            )
+            series_id = conn.execute(
+                "SELECT series_id FROM device_series "
+                "WHERE gateway_id=? AND device=? AND metric=?",
+                key,
+            ).fetchone()[0]
+            self._series_ids[key] = series_id
+        return series_id
+
+    def _record_device_sample_sync(
+        self,
+        gateway_id: str,
+        ts: float,
+        metrics: Dict[Tuple[str, str], float],
+        timezone: Optional[str],
+    ) -> bool:
+        with self._lock:
+            try:
+                conn = self._ensure_conn()
+                its = int(round(ts))
+                day = _local_date(ts, _get_zone(timezone)).isoformat()
+                for (device, metric), value in metrics.items():
+                    series_id = self._series_id(conn, gateway_id, device, metric)
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO device_samples "
+                        "(series_id, ts, value) VALUES (?,?,?)",
+                        (series_id, its, value),
+                    )
+                    if cur.rowcount != 1:
+                        continue  # duplicate timestamp: never double count
+                    conn.execute(
+                        "INSERT INTO device_daily "
+                        "(series_id, day, min_value, max_value, sum_value, "
+                        "count, last_ts) VALUES (?,?,?,?,?,1,?) "
+                        "ON CONFLICT(series_id, day) DO UPDATE SET "
+                        "min_value=MIN(min_value, excluded.min_value), "
+                        "max_value=MAX(max_value, excluded.max_value), "
+                        "sum_value=sum_value+excluded.sum_value, "
+                        "count=count+1, last_ts=excluded.last_ts",
+                        (series_id, day, value, value, value, its),
+                    )
+                conn.commit()
+                return True
+            except Exception as e:  # storage must never break polling
+                self._note_write_failure(e)
+                return False
+
+    @staticmethod
+    def _series_filter(
+        gateway: Optional[str],
+        devices: Optional[Iterable[str]],
+        metrics: Optional[Iterable[str]],
+    ) -> Tuple[str, List[Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if gateway:
+            clauses.append("gateway_id=?")
+            params.append(gateway)
+        for column, values in (("device", devices), ("metric", metrics)):
+            values = [v for v in (values or []) if v]
+            if values:
+                clauses.append(f"{column} IN ({','.join('?' * len(values))})")
+                params.extend(values)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    async def get_device_series(
+        self, gateway: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Recorded device series with their raw and daily coverage."""
+        if not self.enabled:
+            return {"enabled": False, "series": [], "metrics": DEVICE_METRICS}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._ensure_executor(), partial(self._get_device_series_sync, gateway)
+        )
+
+    def _get_device_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
+        base = {
+            "enabled": True,
+            "device_enabled": self.device_enabled,
+            "interval_seconds": self._device_interval,
+            "metrics": DEVICE_METRICS,
+        }
+        with self._lock:
+            try:
+                conn = self._ensure_conn()
+                where, params = self._series_filter(gateway, None, None)
+                rows = conn.execute(
+                    "SELECT s.series_id, s.gateway_id, s.device, s.metric, "
+                    "s.unit, "
+                    "(SELECT MIN(ts) FROM device_samples d "
+                    "WHERE d.series_id=s.series_id) AS first_ts, "
+                    "(SELECT MAX(ts) FROM device_samples d "
+                    "WHERE d.series_id=s.series_id) AS last_ts, "
+                    "(SELECT MIN(day) FROM device_daily d "
+                    "WHERE d.series_id=s.series_id) AS first_day, "
+                    "(SELECT MAX(day) FROM device_daily d "
+                    "WHERE d.series_id=s.series_id) AS last_day "
+                    f"FROM device_series s{where} "
+                    "ORDER BY s.gateway_id, s.device, s.metric",
+                    params,
+                ).fetchall()
+            except sqlite3.Error as e:
+                logger.debug("TimeSeriesStore device series query failed: %s", e)
+                return {**base, "series": []}
+        series = [
+            {
+                "gateway": row["gateway_id"],
+                "device": row["device"],
+                "metric": row["metric"],
+                "unit": row["unit"],
+                "label": DEVICE_METRICS.get(row["metric"], {}).get(
+                    "label", row["metric"]
+                ),
+                "first_ts": row["first_ts"],
+                "last_ts": row["last_ts"],
+                "first_day": row["first_day"],
+                "last_day": row["last_day"],
+            }
+            for row in rows
+        ]
+        return {**base, "series": series}
+
+    async def get_device_trend(
+        self,
+        metrics: Optional[List[str]] = None,
+        gateway: Optional[str] = None,
+        devices: Optional[List[str]] = None,
+        start: Optional[float] = None,
+        end: Optional[float] = None,
+        hours: int = 24,
+        resolution: str = "auto",
+    ) -> Dict[str, Any]:
+        """Device signal history for charting, one entry per series.
+
+        ``raw`` averages the stored samples into ~360 buckets (with bucket
+        min/max); ``daily`` returns one min/avg/max point per stored local
+        day. ``auto`` (default) uses raw for windows up to 14 days that
+        raw retention still covers, else daily.
+
+        Args:
+            metrics:    Metric ids to include (None = all).
+            gateway:    Restrict to one gateway ID.
+            devices:    Restrict to these device blocks.
+            start:      Window start (epoch seconds); default end - hours.
+            end:        Window end (epoch seconds); default now.
+            hours:      Window length when no explicit start.
+            resolution: "auto", "raw" or "daily".
+        """
+        if not self.enabled:
+            return {"enabled": False, "series": [], "resolution": None}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._ensure_executor(),
+            partial(
+                self._get_device_trend_sync,
+                metrics,
+                gateway,
+                devices,
+                start,
+                end,
+                hours,
+                resolution,
+            ),
+        )
+
+    def _get_device_trend_sync(
+        self,
+        metrics: Optional[List[str]],
+        gateway: Optional[str],
+        devices: Optional[List[str]],
+        start: Optional[float],
+        end: Optional[float],
+        hours: int,
+        resolution: str,
+    ) -> Dict[str, Any]:
+        now = time.time()
+        end = float(end) if end is not None else now + 300.0
+        start = float(start) if start is not None else end - max(1, hours) * 3600.0
+        if start > end:
+            start, end = end, start
+        span = max(60.0, end - start)
+        result: Dict[str, Any] = {
+            "enabled": True,
+            "start": start,
+            "end": end,
+            "resolution": None,
+            "bucket_seconds": None,
+            "series": [],
+        }
+        with self._lock:
+            try:
+                conn = self._ensure_conn()
+                where, params = self._series_filter(gateway, devices, metrics)
+                series_rows = conn.execute(
+                    "SELECT series_id, gateway_id, device, metric, unit "
+                    f"FROM device_series{where} "
+                    "ORDER BY gateway_id, device, metric",
+                    params,
+                ).fetchall()
+                if not series_rows:
+                    return result
+                ids = [row["series_id"] for row in series_rows]
+                marks = ",".join("?" * len(ids))
+
+                if resolution not in ("raw", "daily"):
+                    resolution = self._pick_device_resolution(
+                        conn, ids, marks, start, span
+                    )
+                points: Dict[int, List[Dict[str, Any]]] = {i: [] for i in ids}
+                if resolution == "raw":
+                    bucket = max(
+                        float(self._device_interval),
+                        max(60.0, round(span / 360.0 / 60.0) * 60.0),
+                    )
+                    rows = conn.execute(
+                        "SELECT series_id, "
+                        "CAST(ts / ? AS INTEGER) * ? AS bstart, "
+                        "AVG(value) AS avg_v, MIN(value) AS min_v, "
+                        "MAX(value) AS max_v FROM device_samples "
+                        f"WHERE series_id IN ({marks}) AND ts>=? AND ts<=? "
+                        "GROUP BY series_id, bstart ORDER BY series_id, bstart",
+                        (bucket, bucket, *ids, int(start), int(end) + 1),
+                    ).fetchall()
+                    for row in rows:
+                        points[row["series_id"]].append(
+                            {
+                                "ts": row["bstart"],
+                                "avg": row["avg_v"],
+                                "min": row["min_v"],
+                                "max": row["max_v"],
+                            }
+                        )
+                    result["bucket_seconds"] = bucket
+                else:
+                    # Local days; UTC dates of the window bounds are close
+                    # enough and the rows carry their own day label.
+                    lo = datetime.fromtimestamp(start, _UTC).strftime("%Y-%m-%d")
+                    hi = datetime.fromtimestamp(end, _UTC).strftime("%Y-%m-%d")
+                    rows = conn.execute(
+                        "SELECT series_id, day, min_value, max_value, "
+                        "sum_value / count AS avg_v FROM device_daily "
+                        f"WHERE series_id IN ({marks}) AND day>=? AND day<=? "
+                        "ORDER BY series_id, day",
+                        (*ids, lo, hi),
+                    ).fetchall()
+                    for row in rows:
+                        noon = (
+                            datetime.strptime(row["day"], "%Y-%m-%d")
+                            .replace(tzinfo=_UTC)
+                            .timestamp()
+                            + 43200.0
+                        )
+                        points[row["series_id"]].append(
+                            {
+                                "ts": noon,
+                                "day": row["day"],
+                                "avg": row["avg_v"],
+                                "min": row["min_value"],
+                                "max": row["max_value"],
+                            }
+                        )
+                    result["bucket_seconds"] = 86400.0
+            except sqlite3.Error as e:
+                logger.debug("TimeSeriesStore device trend query failed: %s", e)
+                return result
+        result["resolution"] = resolution
+        result["series"] = [
+            {
+                "gateway": row["gateway_id"],
+                "device": row["device"],
+                "metric": row["metric"],
+                "unit": row["unit"],
+                "label": DEVICE_METRICS.get(row["metric"], {}).get(
+                    "label", row["metric"]
+                ),
+                "points": points[row["series_id"]],
+            }
+            for row in series_rows
+        ]
+        return result
+
+    @staticmethod
+    def _pick_device_resolution(
+        conn: sqlite3.Connection,
+        ids: List[int],
+        marks: str,
+        start: float,
+        span: float,
+    ) -> str:
+        """Raw when the window is short and raw samples cover it, else daily.
+
+        A window that starts before the oldest raw sample still reads raw if
+        there is no older daily history either (a fresh install should show
+        its first hour at full detail, not as one daily point).
+        """
+        if span > DEVICE_RAW_MAX_SPAN:
+            return "daily"
+        oldest = conn.execute(
+            f"SELECT MIN(ts) FROM device_samples WHERE series_id IN ({marks})",
+            ids,
+        ).fetchone()[0]
+        if oldest is None:
+            return "daily"
+        if start >= oldest - 3600:
+            return "raw"
+        oldest_day = datetime.fromtimestamp(oldest, _UTC).strftime("%Y-%m-%d")
+        older_daily = conn.execute(
+            "SELECT 1 FROM device_daily "
+            f"WHERE series_id IN ({marks}) AND day < ? LIMIT 1",
+            (*ids, oldest_day),
+        ).fetchone()
+        return "daily" if older_daily else "raw"
+
+    # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
 
     async def get_daily_energy(
-        self, days: int = 7, gateway: Optional[str] = None
+        self,
+        days: int = 7,
+        gateway: Optional[str] = None,
+        start_day: Optional[str] = None,
+        end_day: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Daily energy totals, most recent day first.
 
         Args:
-            days:    Number of days to include (counting back from today).
-            gateway: Restrict to one gateway ID (None = all gateways).
+            days:      Number of days to include (counting back from today).
+            gateway:   Restrict to one gateway ID (None = all gateways).
+            start_day: Inclusive first local day (YYYY-MM-DD). When either
+                       bound is given, ``days`` is ignored and every stored
+                       day in the range is returned.
+            end_day:   Inclusive last local day (YYYY-MM-DD).
         """
         if not self.enabled:
             return {"enabled": False, "days": [], "last_updated": None}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(),
-            partial(self._get_daily_energy_sync, days, gateway),
+            partial(
+                self._get_daily_energy_sync, days, gateway, start_day, end_day
+            ),
         )
 
     def _get_daily_energy_sync(
-        self, days: int, gateway: Optional[str]
+        self,
+        days: int,
+        gateway: Optional[str],
+        start_day: Optional[str] = None,
+        end_day: Optional[str] = None,
     ) -> Dict[str, Any]:
         with self._lock:
             try:
@@ -592,19 +1141,26 @@ class TimeSeriesStore:
             # the UTC date around midnight. Widen the SQL cutoff by one day so
             # late-local-day rows are never dropped, then trim to `days` after
             # grouping (ISO day strings sort correctly across gateways).
-            cutoff = (datetime.now(_UTC) - timedelta(days=max(days, 1))).strftime(
-                "%Y-%m-%d"
-            )
+            ranged = start_day is not None or end_day is not None
+            if ranged:
+                lo = start_day or "0000-00-00"
+                hi = end_day or "9999-99-99"
+            else:
+                lo = (
+                    datetime.now(_UTC) - timedelta(days=max(days, 1))
+                ).strftime("%Y-%m-%d")
+                hi = "9999-99-99"
             if gateway:
                 rows = conn.execute(
-                    "SELECT * FROM daily_energy WHERE day>=? AND gateway_id=? "
-                    "ORDER BY day DESC",
-                    (cutoff, gateway),
+                    "SELECT * FROM daily_energy WHERE day>=? AND day<=? "
+                    "AND gateway_id=? ORDER BY day DESC",
+                    (lo, hi, gateway),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM daily_energy WHERE day>=? ORDER BY day DESC",
-                    (cutoff,),
+                    "SELECT * FROM daily_energy WHERE day>=? AND day<=? "
+                    "ORDER BY day DESC",
+                    (lo, hi),
                 ).fetchall()
             by_day: Dict[str, Dict[str, Dict[str, Any]]] = {}
             last_updated: Optional[float] = None
@@ -619,7 +1175,7 @@ class TimeSeriesStore:
                     {"day": day, "gateways": gateways}
                     for day, gateways in sorted(
                         by_day.items(), key=lambda item: item[0], reverse=True
-                    )[:days]
+                    )[: (None if ranged else days)]
                 ],
                 "last_updated": last_updated,
             }
@@ -847,6 +1403,12 @@ class TimeSeriesStore:
                 "db_size_bytes": 0,
                 "samples": 0,
                 "daily_rows": 0,
+                "device_enabled": False,
+                "device_retention_seconds": -1,
+                "device_interval_seconds": self._device_interval,
+                "device_series": 0,
+                "device_samples": 0,
+                "device_daily_rows": 0,
                 "write_failures": 0,
                 "gateways": [],
             }
@@ -856,6 +1418,7 @@ class TimeSeriesStore:
     def _status_sync(self) -> Dict[str, Any]:
         db_size = 0
         samples = daily_rows = 0
+        device_series = device_samples = device_daily = 0
         gateways: List[str] = []
         with self._lock:
             if Path(self._db_path).exists():
@@ -868,6 +1431,15 @@ class TimeSeriesStore:
                     samples = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
                     daily_rows = conn.execute(
                         "SELECT COUNT(*) FROM daily_energy"
+                    ).fetchone()[0]
+                    device_series = conn.execute(
+                        "SELECT COUNT(*) FROM device_series"
+                    ).fetchone()[0]
+                    device_samples = conn.execute(
+                        "SELECT COUNT(*) FROM device_samples"
+                    ).fetchone()[0]
+                    device_daily = conn.execute(
+                        "SELECT COUNT(*) FROM device_daily"
                     ).fetchone()[0]
                     gateways = [
                         row[0]
@@ -887,6 +1459,12 @@ class TimeSeriesStore:
             "db_size_bytes": db_size,
             "samples": samples,
             "daily_rows": daily_rows,
+            "device_enabled": self.device_enabled,
+            "device_retention_seconds": self._device_retention,
+            "device_interval_seconds": self._device_interval,
+            "device_series": device_series,
+            "device_samples": device_samples,
+            "device_daily_rows": device_daily,
             "write_failures": self._write_failures,
             "gateways": gateways,
         }
@@ -946,6 +1524,14 @@ class TimeSeriesStore:
                     conn.execute(
                         "DELETE FROM daily_energy WHERE day < ?", (cutoff_day,)
                     )
+                    conn.execute(
+                        "DELETE FROM device_daily WHERE day < ?", (cutoff_day,)
+                    )
+                if self._device_retention > 0:
+                    cutoff = now - max(self._device_retention, RAW_KEEP_FLOOR)
+                    conn.execute(
+                        "DELETE FROM device_samples WHERE ts < ?", (int(cutoff),)
+                    )
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except sqlite3.Error as e:
@@ -980,6 +1566,8 @@ class TimeSeriesStore:
                     logger.debug("TimeSeriesStore close failed: %s", e)
                 self._conn = None
             self._state.clear()
+            self._device_last.clear()
+            self._series_ids.clear()
         if self._executor is not None:
             # cancel_futures: queued writes must not reopen the closed DB
             self._executor.shutdown(wait=False, cancel_futures=True)
@@ -1001,6 +1589,8 @@ def get_timeseries_store() -> TimeSeriesStore:
             db_path=settings.timeseries_path,
             retention=settings.timeseries_retention,
             daily_retention=settings.timeseries_daily_retention,
+            device_retention=settings.timeseries_device_retention,
+            device_interval=settings.timeseries_device_interval,
         )
     return _store
 

@@ -390,6 +390,8 @@ The `track_requests` middleware in `app/main.py` does double duty: request stati
 | `app/mqtt/publisher.py` | `MqttPublisher` — connection loop, topic publishing, LWT, TLS, reconnect |
 | `app/mqtt/ha_discovery.py` | Home Assistant auto-discovery payload builder (pure function) |
 | `app/static/index.html` | Console UI dashboard — Powerwall status, health panel, battery graphics, MQTT broker panel |
+| `app/static/history.html` | History page (`/history`) — daily energy for any date range, Powerwall temperature/fan charts; dependency-free canvas charts |
+| `app/core/timeseries.py` | SQLite time-series store — power samples, daily kWh, Powerwall temperature/fan series (`DEVICE_SIGNALS`) |
 | `app/static/powerflow/app.js` | ⚠️ **PATCHED** vendored Tesla Gateway web UI — `isAuthenticated` always returns `true` (issue #7). **Do NOT replace with a clean copy.** |
 | `mqtt-tools/README.md` | Broker setup guide, CLI monitoring, GUI usage, HA integration steps |
 | `mqtt-tools/monitor.py` | Live tkinter GUI — connects to broker, shows real-time Powerwall telemetry |

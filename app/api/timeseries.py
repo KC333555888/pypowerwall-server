@@ -11,10 +11,15 @@ Routes:
     - GET /api/timeseries/trend   -> Bucketed kW + battery level (charting)
     - GET /api/timeseries/samples -> Raw samples (troubleshooting)
     - GET /api/timeseries/status  -> Subsystem status and DB sizing
+    - GET /api/timeseries/devices -> Recorded Powerwall temperature/fan series
+    - GET /api/timeseries/device_trend -> Temperature/fan history for charts
 
 Query Parameters:
     daily:   days (int, default 7)  — number of days back from today
              gateway (str, optional) — restrict to a single gateway ID
+             start / end (YYYY-MM-DD, optional) — inclusive local-day range;
+             either one replaces ``days`` and returns every stored day in
+             the range (the History page's lookup)
     today:   none — returns every configured gateway's running totals
     trend:   hours (int, default 24, max 168) — window length; gateway
              (str, optional) restricts to one gateway. start (unix ts,
@@ -25,6 +30,12 @@ Query Parameters:
              battery/grid kW plus mean battery level (%) per bucket.
     samples: gateway (str, optional), start (unix ts), end (unix ts),
              limit (int, default 500, max 10000)
+    devices: gateway (str, optional)
+    device_trend:
+             metrics (comma list, e.g. pack_temp_max,fan_a_rpm; default
+             all), gateway (str), devices (comma list of device blocks),
+             start / end (unix ts), hours (int, default 24, used without
+             start), resolution ("auto" | "raw" | "daily")
 
 All endpoints respond with {"enabled": false, ...} when the subsystem is
 disabled (PW_TIMESERIES_RETENTION=-1) so clients can hide the UI panel
@@ -37,29 +48,55 @@ Design Notes:
       errors, matching the degraded-gracefully style of the other APIs.
 """
 
+import re
 import time
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.core.gateway_manager import gateway_manager
 from app.core.timeseries import get_timeseries_store
 
 router = APIRouter()
 
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _check_day(value: Optional[str], name: str) -> Optional[str]:
+    """Validate a YYYY-MM-DD query parameter (422 on bad input)."""
+    if value is not None and not _DAY_RE.match(value):
+        raise HTTPException(status_code=422, detail=f"{name} must be YYYY-MM-DD")
+    return value
+
+
+def _split(value: Optional[str]) -> Optional[List[str]]:
+    """Split a comma-separated query parameter, dropping blanks."""
+    if not value:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
+
 
 @router.get("/daily")
 async def get_daily_energy(
     days: int = Query(default=7, ge=1, le=366),
     gateway: Optional[str] = Query(default=None),
+    start: Optional[str] = Query(default=None, description="First day, YYYY-MM-DD"),
+    end: Optional[str] = Query(default=None, description="Last day, YYYY-MM-DD"),
 ):
     """Daily energy totals (kWh) per gateway, most recent day first.
 
     Each day entry contains one row per gateway that reported samples that
     day, with directional kWh categories (solar, home, battery charge/
-    discharge, grid import/export).
+    discharge, grid import/export). ``start``/``end`` select an explicit
+    range of gateway-local days instead of the last ``days``.
     """
-    return await get_timeseries_store().get_daily_energy(days=days, gateway=gateway)
+    return await get_timeseries_store().get_daily_energy(
+        days=days,
+        gateway=gateway,
+        start_day=_check_day(start, "start"),
+        end_day=_check_day(end, "end"),
+    )
 
 
 @router.get("/today")
@@ -124,3 +161,47 @@ async def get_samples(
 async def get_status():
     """Time-series subsystem status: retention settings, DB size, row counts."""
     return await get_timeseries_store().status()
+
+
+@router.get("/devices")
+async def get_devices(gateway: Optional[str] = Query(default=None)):
+    """Recorded Powerwall temperature and fan series.
+
+    One entry per (gateway, device block, metric) with the time range of
+    retained raw samples (``first_ts``/``last_ts``) and daily rollups
+    (``first_day``/``last_day``), plus a ``metrics`` catalog of labels,
+    units and chart groups (temperature, fan_speed, fan_duty).
+    """
+    return await get_timeseries_store().get_device_series(gateway=gateway)
+
+
+@router.get("/device_trend")
+async def get_device_trend(
+    metrics: Optional[str] = Query(
+        default=None, description="Comma-separated metric ids (default all)"
+    ),
+    gateway: Optional[str] = Query(default=None),
+    devices: Optional[str] = Query(
+        default=None, description="Comma-separated device blocks"
+    ),
+    start: Optional[float] = Query(default=None),
+    end: Optional[float] = Query(default=None),
+    hours: int = Query(default=24, ge=1, le=24 * 3660),
+    resolution: str = Query(default="auto", pattern="^(auto|raw|daily)$"),
+):
+    """Powerwall temperature / fan history, one point list per series.
+
+    Each point has ``avg``, ``min`` and ``max``. ``raw`` resolution buckets
+    the stored samples into ~360 points; ``daily`` returns one point per
+    stored local day (with ``day``). ``auto`` picks raw for windows up to 14
+    days still covered by raw retention, else daily.
+    """
+    return await get_timeseries_store().get_device_trend(
+        metrics=_split(metrics),
+        gateway=gateway,
+        devices=_split(devices),
+        start=start,
+        end=end,
+        hours=hours,
+        resolution=resolution,
+    )

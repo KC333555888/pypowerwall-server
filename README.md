@@ -30,6 +30,7 @@ The **MQTT** panel shows the live MQTT settings if the `PW_MQTT_BROKER` environm
 - **Real-Time Updates** - WebSocket streaming with 1-second updates and background polling with intelligent caching
 - **Complete API** - Full backward compatibility with pypowerwall proxy plus new multi-gateway and aggregate endpoints
 - **Console Web UI** - Tesla Power Flow animation, management console, and auto-generated API documentation at /docs
+- **History** - Daily energy totals for any date range plus Powerwall temperature and fan history at `/history`, stored locally in SQLite
 - **Optional Control Mode** - Token-protected `/control/*` API to set backup reserve and operating mode, plus a Powerwall Control card in the web Console (enabled by `PW_CONTROL_SECRET`; read-only by default)
 - **MQTT Integration** - Publish live Powerwall metrics to any MQTT broker; built-in Home Assistant auto-discovery; see [mqtt-tools/README.md](mqtt-tools/README.md)
 
@@ -295,6 +296,8 @@ Raise it if a slow local gateway logs poll timeouts.
 PW_TIMESERIES_RETENTION=24h            # Raw 5s sample retention (default: 24h)
 PW_TIMESERIES_DAILY_RETENTION=0        # Daily kWh aggregate retention (default: 0 = unlimited)
 PW_TIMESERIES_PATH=/data/timeseries.db  # SQLite path (default: /data/timeseries.db if /data exists)
+PW_TIMESERIES_DEVICE_RETENTION=30d     # Temperature/fan sample retention (default: 30d; -1 = don't record)
+PW_TIMESERIES_DEVICE_INTERVAL=60s      # Seconds between temperature/fan samples (default: 60s)
 ```
 The server records every poll cycle's power readings to a local SQLite
 store (WAL mode) and derives daily energy totals per gateway via trapezoidal
@@ -316,6 +319,28 @@ integrated — no fabricated energy. Set `PW_TIMESERIES_RETENTION=-1` to
 disable the subsystem entirely for headless proxy deployments (no SQLite
 file, no writes, UI panel hidden). Retention accepts `90s`, `48h`, `7d`,
 `30d`, `365d` style values; `0` = unlimited.
+
+**Powerwall temperatures and fans.** The same store records each
+Powerwall's temperatures (battery pack max/min, shunt, inverter ambient;
+Powerwall 2 ambient) and inverter fans (speed in rpm and duty cycle in %)
+once per `PW_TIMESERIES_DEVICE_INTERVAL`. The readings come from the vitals
+and fan data each poll already fetches, so this adds no gateway calls; they
+need a TEDAPI connection (Powerwall 3 temperatures need pypowerwall 0.17.4
+or later). Samples are kept for `PW_TIMESERIES_DEVICE_RETENTION`, about
+0.4 MB per Powerwall per day, so roughly 12 MB per unit at the 30-day
+default. A daily low/average/high for every signal is kept alongside, under
+`PW_TIMESERIES_DAILY_RETENTION`, so long-range history survives the raw
+samples being pruned. Set `PW_TIMESERIES_DEVICE_RETENTION=-1` to stop
+recording them while keeping energy history.
+
+**History page (`/history`).** Look up daily energy for any date range
+(24 hours to all stored history) with range totals, a per-day chart, a
+table and CSV download, plus temperature and fan charts with per-unit
+toggles, a °C/°F switch and low/average/high for the range. Ranges up to
+14 days use the minute-level samples; longer ranges use the daily
+low/average/high. The range and gateway are kept in the URL, so a view can
+be bookmarked, e.g. `/history?range=90d`. Under `PROXY_BASE_URL` it is at
+`<base>/history`.
 
 ### Configuration File (gateways.yaml)
 
@@ -637,12 +662,14 @@ return `503`; a Tesla-side error returns `502`, and an invalid POST body `400`.
 - `GET /api/aggregate/soe` - Total battery capacity and charge
 - `GET /api/aggregate/status` - Health status of all gateways
 
-**Time-Series Endpoints (Daily Energy):**
+**Time-Series Endpoints (Daily Energy, Temperatures, Fans):**
 - `GET /api/timeseries/today` - Today's running kWh totals per gateway
-- `GET /api/timeseries/daily?days=7` - Daily kWh totals (per gateway/category)
+- `GET /api/timeseries/daily?days=7` - Daily kWh totals (per gateway/category); `start`/`end` (`YYYY-MM-DD`) select any range of local days instead, e.g. `?start=2026-01-01&end=2026-06-30`
 - `GET /api/timeseries/trend?hours=24` - Bucketed kW + battery level for charting (per-gateway mean, summed across gateways)
 - `GET /api/timeseries/samples` - Raw samples (troubleshooting; filters: `gateway`, `start`, `end`, `limit`) — includes battery level (`soe`)
 - `GET /api/timeseries/status` - Subsystem status, retention settings, DB size
+- `GET /api/timeseries/devices` - Recorded temperature/fan series per gateway and device, with the time range each covers and a catalog of metric labels and units
+- `GET /api/timeseries/device_trend` - Temperature/fan history for charting, with avg/min/max per point (filters: `metrics`, `gateway`, `devices`, `start`, `end`, `hours`; `resolution=auto|raw|daily`)
 
 All report `{"enabled": false, ...}` when disabled (`PW_TIMESERIES_RETENTION=-1`).
 
@@ -892,6 +919,7 @@ pypowerwall-server/
 │   │   └── transform.py        # UI data transformations
 │   └── static/
 │       ├── index.html          # Management console
+│       ├── history.html        # History page (/history)
 │       ├── example.html        # iFrame demo
 │       └── powerflow/          # Power flow UI assets
 ├── tests/
