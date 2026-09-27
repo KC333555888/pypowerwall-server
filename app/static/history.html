@@ -293,10 +293,91 @@
             margin-right: 12px;
         }
 
-        .chart-hint {
-            font-size: 0.75em;
+        /* Energy Trend: same look as the console's Energy Trend card */
+        .energy-trend {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            margin-top: 16px;
+        }
+        .energy-trend-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 16px;
+            font-size: 0.8em;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        .energy-trend-legend .key {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+            transition: opacity 0.15s ease;
+            border: 0;
+            background: none;
+            padding: 0;
+            font: inherit;
+            color: inherit;
+        }
+        .energy-trend-legend .key:focus-visible {
+            outline: 1px solid #58a6ff;
+            outline-offset: 2px;
+            border-radius: 3px;
+        }
+        .energy-trend-legend .key.off {
+            opacity: 0.35;
+        }
+        .energy-trend-legend .muted {
             color: var(--text-muted);
-            margin-top: 4px;
+        }
+        .energy-trend-legend .swatch {
+            display: inline-block;
+            width: 16px;
+            height: 3px;
+            border-radius: 2px;
+        }
+        .energy-trend-legend .swatch.dashed {
+            background: repeating-linear-gradient(90deg, #3fb950 0 5px, transparent 5px 9px);
+        }
+        .energy-trend-chart {
+            width: 100%;
+            height: 300px;
+            display: block;
+            touch-action: pan-y;
+        }
+        .energy-trend-tooltip {
+            position: absolute;
+            display: none;
+            background: rgba(13, 17, 23, 0.95);
+            border: 1px solid rgba(139, 148, 158, 0.4);
+            border-radius: 6px;
+            padding: 6px 9px;
+            font-size: 11px;
+            line-height: 1.6;
+            color: var(--text-primary);
+            pointer-events: none;
+            z-index: 5;
+            white-space: nowrap;
+        }
+        .energy-trend-tooltip .tt-time {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+        .energy-trend-tooltip .tt-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .energy-trend-note {
+            font-size: 0.8em;
+            color: var(--text-muted);
+            margin-top: 6px;
+            min-height: 1em;
         }
 
         /* Line-style key for the Powerwall units when "All" is selected */
@@ -598,13 +679,17 @@
             { key: 'grid_import_kwh', label: 'Grid import', color: '#f85149', total: 'import' },
             { key: 'grid_export_kwh', label: 'Grid export', color: '#db6d28', total: 'export' },
         ];
-        // Intraday power lines (1h / 6h / 24h ranges), from /api/timeseries/trend.
-        // Sign convention: battery + discharging / - charging, grid + import / - export
-        const POWER_SERIES = [
-            { key: 'solar_kw', label: 'Solar', color: '#f0c000' },
-            { key: 'home_kw', label: 'Home', color: '#58a6ff' },
-            { key: 'battery_kw', label: 'Battery', color: '#3fb950' },
-            { key: 'grid_kw', label: 'Grid', color: '#f85149' },
+        // Intraday power (1h / 6h / 24h ranges), from /api/timeseries/trend.
+        // Mirrors the console's Energy Trend chart (app/static/index.html):
+        // same colors, legend, kW fills, dashed battery level on a 0-100 %
+        // right axis, hover crosshair and tooltip. Battery kW + = discharging,
+        // grid kW + = importing.
+        const TREND_SERIES = [
+            { key: 'solar_kw', label: 'Solar', color: '#f0c000', axis: 'kw' },
+            { key: 'home_kw', label: 'Home', color: '#58a6ff', axis: 'kw' },
+            { key: 'battery_kw', label: 'Battery', color: '#3fb950', axis: 'kw' },
+            { key: 'grid_kw', label: 'Grid', color: '#8b949e', axis: 'kw' },
+            { key: 'battery_level', label: 'Battery Level', color: '#3fb950', axis: 'pct' },
         ];
         const METRIC_COLORS = {
             pack_temp_max: '#f85149',
@@ -629,7 +714,7 @@
             gateway: '',
             unit: 'C',
             energyOn: new Set(['solar_kwh']),
-            powerOn: new Set(POWER_SERIES.map(s => s.key)),
+            trendHidden: new Set(),  // Energy Trend series switched off in the legend
             powerTrend: null,
             tempMetricsOff: new Set(),
             fanMode: 'fan_speed',
@@ -1055,7 +1140,9 @@
             return canvas;
         }
 
+        let trendRedraw = null;  // Energy Trend canvas (drawn outside the shared chart helper)
         function redrawAll() {
+            if (trendRedraw) trendRedraw();
             for (const [canvas, st] of charts) {
                 if (!canvas.isConnected) { charts.delete(canvas); continue; }
                 drawChart(canvas, st.cfg);
@@ -1221,63 +1308,240 @@
 
         function renderPowerChart(body) {
             const trend = state.powerTrend;
-            const pts = trend?.points || [];
-            if (trend?.error || !pts.length) {
-                const msg = trend?.error
-                    ? `Couldn't load power history: ${esc(trend.error)}`
-                    : 'No power samples in this range yet. They are recorded every poll and kept for PW_TIMESERIES_RETENTION (24 hours by default).';
-                const empty = document.createElement('div');
-                empty.className = 'empty';
-                empty.innerHTML = msg;
-                body.appendChild(empty);
-                return;
+            const points = trend?.points || [];
+            const panel = document.createElement('div');
+            panel.className = 'energy-trend';
+            body.appendChild(panel);
+
+            const legend = document.createElement('div');
+            legend.className = 'energy-trend-legend';
+            for (const s of TREND_SERIES) {
+                const key = document.createElement('button');
+                key.type = 'button';
+                key.className = 'key' + (state.trendHidden.has(s.key) ? ' off' : '');
+                const sw = document.createElement('span');
+                sw.className = 'swatch' + (s.axis === 'pct' ? ' dashed' : '');
+                if (s.axis !== 'pct') sw.style.background = s.color;
+                key.appendChild(sw);
+                key.append(s.axis === 'pct' ? 'Battery Level % ' : `${s.label} kW`);
+                if (s.axis === 'pct') {
+                    const muted = document.createElement('span');
+                    muted.className = 'muted';
+                    muted.textContent = '(right axis)';
+                    key.appendChild(muted);
+                }
+                key.addEventListener('click', () => {
+                    if (state.trendHidden.has(s.key)) state.trendHidden.delete(s.key);
+                    else state.trendHidden.add(s.key);
+                    key.classList.toggle('off', state.trendHidden.has(s.key));
+                    draw();
+                    updateTooltip();
+                });
+                legend.appendChild(key);
             }
-            const chips = document.createElement('div');
-            chips.className = 'chips';
-            const lab = document.createElement('span');
-            lab.className = 'chip-label';
-            lab.textContent = `Power (kW), ${fmtStep(trend.bucket_seconds || 60)} steps`;
-            chips.appendChild(lab);
-            body.appendChild(chips);
-            const canvas = makeChart(body, false);
-            canvas.setAttribute('aria-label', 'Power through the day chart');
-            const half = (trend.bucket_seconds || 60) / 2;
-            const win = trend.window;
-            const cfg = {
-                xMode: 'time',
-                xMin: win.start,
-                xMax: Math.max(Math.min(win.end, Date.now() / 1000), win.start + 60),
-                gap: trend.bucket_seconds || 60,
-                zeroBased: true,
-                tooltipAll: true,
-                yUnit: 'kW',
-                series: POWER_SERIES.map(s => ({
-                    id: s.key,
-                    label: s.label,
-                    color: s.color,
-                    type: 'line',
-                    visible: state.powerOn.has(s.key),
-                    points: pts.map(p => ({ x: p.ts + half, y: p[s.key] })),
-                })),
-                formatValue: (p, s) => {
-                    const v = `${fmtNum(p.y, 2)} kW`;
-                    if (s.id === 'battery_kw') return p.y > 0.01 ? `${v} discharging` : p.y < -0.01 ? `${fmtNum(-p.y, 2)} kW charging` : v;
-                    if (s.id === 'grid_kw') return p.y > 0.01 ? `${v} import` : p.y < -0.01 ? `${fmtNum(-p.y, 2)} kW export` : v;
-                    return v;
-                },
-            };
-            for (const s of POWER_SERIES) {
-                chips.appendChild(chipButton(s.label, s.color, state.powerOn.has(s.key), on => {
-                    if (on) state.powerOn.add(s.key); else state.powerOn.delete(s.key);
-                    cfg.series.find(x => x.id === s.key).visible = on;
-                    drawChart(canvas, cfg);
-                }, true));
+            panel.appendChild(legend);
+
+            const canvas = document.createElement('canvas');
+            canvas.className = 'energy-trend-chart';
+            canvas.setAttribute('role', 'img');
+            canvas.setAttribute('aria-label', 'Energy trend chart');
+            const tooltip = document.createElement('div');
+            tooltip.className = 'energy-trend-tooltip';
+            const note = document.createElement('div');
+            note.className = 'energy-trend-note';
+            panel.append(canvas, tooltip, note);
+
+            const win = trend?.window || { start: Date.now() / 1000 - DAY, end: Date.now() / 1000 };
+            const now = Date.now() / 1000;
+            const dom = { t0: win.start, t1: Math.min(win.end, now) };
+            let hover = null;
+
+            if (trend?.error) {
+                note.textContent = `Trend data unavailable: ${trend.error}`;
+            } else if (trend && trend.enabled === false) {
+                note.textContent = 'Energy Trend needs local time-series storage (PW_TIMESERIES_RETENTION not -1).';
+            } else if (points.length < 2) {
+                note.textContent = 'Not enough raw samples in this window yet \u2014 the trend appears as data accumulates.';
+            } else {
+                const mins = Math.round((dom.t1 - dom.t0) / 60);
+                const label = `last ${mins >= 60 ? Math.round(mins / 60) + 'h' : mins + 'm'}`;
+                const bucketMin = Math.round((trend.bucket_seconds || 240) / 60);
+                note.textContent = `${label} \u00b7 ${bucketMin >= 60 ? (bucketMin / 60) + 'h' : bucketMin + ' min'} resolution \u00b7 ${points.length} points`;
             }
-            const hint = document.createElement('div');
-            hint.className = 'chart-hint';
-            hint.textContent = 'Battery above zero = discharging, below = charging · Grid above zero = importing, below = exporting';
-            body.appendChild(hint);
-            drawChart(canvas, cfg);
+
+            const PAD = { l: 48, r: 44, t: 12, b: 24 };
+            function draw() {
+                const rect = canvas.getBoundingClientRect();
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = Math.round(rect.width * dpr);
+                canvas.height = Math.round(rect.height * dpr);
+                const ctx = canvas.getContext('2d');
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                const W = rect.width, H = rect.height;
+                ctx.clearRect(0, 0, W, H);
+                if (points.length < 2 || W < 100) { hover = null; tooltip.style.display = 'none'; return; }
+
+                const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+                const xSpan = (dom.t1 - dom.t0) || 1;
+                const X = ts => PAD.l + ((ts - dom.t0) / xSpan) * plotW;
+                let minKw = 0, maxKw = 0;
+                for (const p of points) {
+                    for (const s of TREND_SERIES) {
+                        if (s.axis !== 'kw' || state.trendHidden.has(s.key) || p[s.key] == null) continue;
+                        minKw = Math.min(minKw, p[s.key]);
+                        maxKw = Math.max(maxKw, p[s.key]);
+                    }
+                }
+                if (maxKw === minKw) maxKw = minKw + 1;
+                const Y = kw => PAD.t + (1 - (kw - minKw) / (maxKw - minKw)) * plotH;
+                const Ypct = pct => PAD.t + (1 - Math.max(0, Math.min(100, pct)) / 100) * plotH;
+
+                // Gridlines, left kW labels, right % labels
+                ctx.font = '11px system-ui, sans-serif';
+                ctx.textBaseline = 'middle';
+                for (let i = 0; i <= 4; i++) {
+                    const kw = minKw + ((maxKw - minKw) * i) / 4;
+                    const y = Y(kw);
+                    ctx.strokeStyle = 'rgba(139, 148, 158, 0.15)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+                    ctx.fillStyle = 'rgba(139, 148, 158, 0.8)';
+                    ctx.textAlign = 'right';
+                    ctx.fillText(kw.toFixed(1), PAD.l - 6, y);
+                    ctx.textAlign = 'left';
+                    ctx.fillText(`${Math.round(i * 25)}%`, W - PAD.r + 6, y);
+                }
+                // Zero line (battery/grid swing negative)
+                if (minKw < 0) {
+                    const zy = Y(0);
+                    ctx.strokeStyle = 'rgba(139, 148, 158, 0.4)';
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath(); ctx.moveTo(PAD.l, zy); ctx.lineTo(W - PAD.r, zy); ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = 'rgba(139, 148, 158, 0.9)';
+                    ctx.textAlign = 'right';
+                    ctx.fillText('0', PAD.l - 6, zy);
+                }
+                // Time axis (~6 ticks, "4p"; minutes shown on short windows)
+                ctx.fillStyle = 'rgba(139, 148, 158, 0.8)';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                const ticks = Math.min(6, points.length - 1);
+                for (let i = 0; i <= ticks; i++) {
+                    const ts = dom.t0 + (xSpan * i) / ticks;
+                    const d = new Date(ts * 1000);
+                    const h = d.getHours();
+                    const hh = `${h % 12 || 12}`;
+                    const label = xSpan <= 6 * 3600 && d.getMinutes()
+                        ? `${hh}:${pad(d.getMinutes())}${h >= 12 ? 'p' : 'a'}`
+                        : `${hh}${h >= 12 ? 'p' : 'a'}`;
+                    ctx.fillText(label, X(ts), H - PAD.b + 6);
+                }
+
+                const drawSeries = (key, color, dashed, yScale, fill) => {
+                    const segments = [];
+                    let seg = [];
+                    for (const p of points) {
+                        const v = p[key];
+                        if (v == null) { if (seg.length > 1) segments.push(seg); seg = []; }
+                        else seg.push([X(p.ts), yScale(v)]);
+                    }
+                    if (seg.length > 1) segments.push(seg);
+                    for (const sg of segments) {
+                        if (fill) {
+                            const zy = Y(0);
+                            ctx.fillStyle = color;
+                            ctx.globalAlpha = 0.12;
+                            ctx.beginPath();
+                            ctx.moveTo(sg[0][0], zy);
+                            for (const [sx, sy] of sg) ctx.lineTo(sx, sy);
+                            ctx.lineTo(sg[sg.length - 1][0], zy);
+                            ctx.closePath();
+                            ctx.fill();
+                            ctx.globalAlpha = 1;
+                        }
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = 1.8;
+                        if (dashed) ctx.setLineDash([5, 4]);
+                        ctx.beginPath();
+                        ctx.moveTo(sg[0][0], sg[0][1]);
+                        for (let i = 1; i < sg.length; i++) ctx.lineTo(sg[i][0], sg[i][1]);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+                };
+                for (const s of TREND_SERIES) {
+                    if (state.trendHidden.has(s.key)) continue;
+                    drawSeries(s.key, s.color, s.axis === 'pct', s.axis === 'pct' ? Ypct : Y, s.axis === 'kw');
+                }
+                // Hover crosshair + value dots
+                if (hover) {
+                    const hx = X(hover.ts);
+                    ctx.strokeStyle = 'rgba(139, 148, 158, 0.5)';
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([3, 3]);
+                    ctx.beginPath(); ctx.moveTo(hx, PAD.t); ctx.lineTo(hx, H - PAD.b); ctx.stroke();
+                    ctx.setLineDash([]);
+                    for (const s of TREND_SERIES) {
+                        if (state.trendHidden.has(s.key) || hover[s.key] == null) continue;
+                        ctx.fillStyle = s.color;
+                        ctx.beginPath(); ctx.arc(hx, s.axis === 'pct' ? Ypct(hover[s.key]) : Y(hover[s.key]), 3.5, 0, Math.PI * 2); ctx.fill();
+                        ctx.strokeStyle = 'rgba(13, 17, 23, 0.9)';
+                        ctx.lineWidth = 1.5; ctx.stroke();
+                    }
+                }
+            }
+
+            function fmtHoverTime(ts) {
+                const d = new Date(ts * 1000);
+                const h = d.getHours() % 12 || 12;
+                const ap = d.getHours() >= 12 ? 'pm' : 'am';
+                return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${h}:${pad(d.getMinutes())}${ap}`;
+            }
+            function updateTooltip() {
+                if (!hover) { tooltip.style.display = 'none'; return; }
+                let html = `<div class="tt-time">${esc(fmtHoverTime(hover.ts))}</div>`;
+                for (const s of TREND_SERIES) {
+                    if (state.trendHidden.has(s.key) || hover[s.key] == null) continue;
+                    const v = hover[s.key];
+                    html += `<div><span class="tt-dot" style="background:${s.color}"></span>${esc(s.label)}: <b>${v.toFixed(s.axis === 'pct' ? 0 : 2)} ${s.axis === 'pct' ? '%' : 'kW'}</b></div>`;
+                }
+                tooltip.innerHTML = html;
+                tooltip.style.display = 'block';
+            }
+            function move(e) {
+                if (points.length < 2) return;
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const plotW = rect.width - PAD.l - PAD.r;
+                if (plotW <= 0 || x < PAD.l || x > rect.width - PAD.r) { leave(); return; }
+                const ts = dom.t0 + ((x - PAD.l) / plotW) * ((dom.t1 - dom.t0) || 1);
+                let best = null, bestD = Infinity;
+                for (const p of points) {
+                    const d = Math.abs(p.ts - ts);
+                    if (d < bestD) { bestD = d; best = p; }
+                }
+                if (best !== hover) { hover = best; draw(); updateTooltip(); }
+                // Tooltip near the cursor, clamped inside the panel
+                const pr = panel.getBoundingClientRect();
+                const tipW = tooltip.offsetWidth, tipH = tooltip.offsetHeight;
+                let left = e.clientX - pr.left + 14;
+                if (left + tipW > pr.width - 4) left = e.clientX - pr.left - tipW - 14;
+                let top = e.clientY - pr.top - tipH - 10;
+                if (top < 2) top = e.clientY - pr.top + 14;
+                tooltip.style.left = `${Math.max(0, left)}px`;
+                tooltip.style.top = `${top}px`;
+            }
+            function leave() {
+                hover = null;
+                tooltip.style.display = 'none';
+                draw();
+            }
+            canvas.addEventListener('pointermove', move);
+            canvas.addEventListener('pointerdown', move);
+            canvas.addEventListener('pointerleave', leave);
+            trendRedraw = draw;
+            draw();
         }
 
         function renderEnergyTable(body, rows, first, last) {
