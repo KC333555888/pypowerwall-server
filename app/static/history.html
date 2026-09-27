@@ -420,6 +420,10 @@
             margin-top: 12px;
         }
 
+        .stats-table .unit-head {
+            display: none;
+        }
+
         .stats-table td:first-child .dot {
             display: inline-block;
             width: 8px;
@@ -438,6 +442,25 @@
             }
             .chart-wrap canvas {
                 height: 260px;
+            }
+            /* Low/Average/High/Latest must fit a phone without sideways
+               scrolling: tighter cells, and long series names wrap */
+            .stats-table table {
+                font-size: 0.8em;
+            }
+            .stats-table th,
+            .stats-table td {
+                padding: 6px 4px;
+            }
+            .stats-table td:first-child {
+                white-space: normal;
+            }
+            /* Unit once in the header instead of in every cell */
+            .stats-table .unit {
+                display: none;
+            }
+            .stats-table .unit-head {
+                display: inline;
             }
             /* Eight range presets: share the row instead of overflowing it */
             #range-presets {
@@ -1332,7 +1355,8 @@
             body.appendChild(statsWrap);
 
             function renderStats() {
-                let html = `<table><thead><tr><th>Series</th><th>Low</th><th>Average</th><th>High</th><th>Latest</th></tr></thead><tbody>`;
+                let html = `<table><thead><tr><th>Series<span class="unit-head"> (${esc(unit)})</span></th><th>Low</th><th>Average</th><th>High</th><th>Latest</th></tr></thead><tbody>`;
+                const u = `<span class="unit"> ${esc(unit)}</span>`;
                 let any = false;
                 for (const s of series) {
                     if (!s.visible) continue;
@@ -1348,10 +1372,10 @@
                     }
                     const when = x => daily ? xDay(x) : fmtTimeLong(x - (trend.bucket_seconds || 60) / 2, (trend.bucket_seconds || 60) < 60);
                     html += `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.label || s.metric)}</td>` +
-                        `<td title="${esc(when(loX))}">${fmtNum(lo, dp)} ${esc(unit)}</td>` +
-                        `<td>${fmtNum(total / pts.length, dp)} ${esc(unit)}</td>` +
-                        `<td title="${esc(when(hiX))}">${fmtNum(hi, dp)} ${esc(unit)}</td>` +
-                        `<td>${fmtNum(pts[pts.length - 1].y, dp)} ${esc(unit)}</td></tr>`;
+                        `<td title="${esc(when(loX))}">${fmtNum(lo, dp)}${u}</td>` +
+                        `<td>${fmtNum(total / pts.length, dp)}${u}</td>` +
+                        `<td title="${esc(when(hiX))}">${fmtNum(hi, dp)}${u}</td>` +
+                        `<td>${fmtNum(pts[pts.length - 1].y, dp)}${u}</td></tr>`;
                 }
                 statsWrap.innerHTML = any ? html + '</tbody></table>' : '';
             }
