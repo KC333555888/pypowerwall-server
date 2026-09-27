@@ -41,7 +41,7 @@ done
 
 confirm() {
   [ "$ASSUME_YES" -eq 1 ] && return 0
-  read -r -p "$1 [Enter] to continue or Ctrl-C to cancel..."
+  read -r -p "$1 [Enter] to continue or Ctrl-C to cancel..." || die "no input - cancelled"
 }
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside the pypowerwall-server git repo"
@@ -58,8 +58,9 @@ if [ -z "$RELEASE_TYPE" ]; then
   echo "Release Type:"
   echo "  1) Beta release (adds -betaX suffix)"
   echo "  2) Production release (version ${SERVER_VERSION})"
-  read -r -p "Select release type [1-2]: " RELEASE_TYPE
+  read -r -p "Select release type [1-2]: " RELEASE_TYPE || die "no input - cancelled"
 fi
+case "$RELEASE_TYPE" in 1|2) ;; *) die "release type must be 1 (beta) or 2 (production)" ;; esac
 
 if [ "$RELEASE_TYPE" == "2" ]; then
   # --- Production ----------------------------------------------------------

@@ -30,6 +30,15 @@ done
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Resolve PYTHON to an absolute path now: the build runs inside a temporary
+# worktree, where a relative override like .venv/bin/python would not resolve.
+case "$PYTHON" in
+    /*) ;;
+    */*) PYTHON="$PWD/$PYTHON" ;;
+    *) PYTHON="$(command -v "$PYTHON")" || die "python not found: ${PYTHON}" ;;
+esac
+[ -x "$PYTHON" ] || die "not an executable python: $PYTHON"
+
 cd "$(git rev-parse --show-toplevel)"
 
 # --- Preconditions ---------------------------------------------------------
@@ -91,7 +100,7 @@ fi
 echo "Ready to upload to PyPI (a version can never be re-uploaded):"
 ls -1 dist
 if [ "$ASSUME_YES" -ne 1 ]; then
-    read -r -p "Upload pypowerwall-server $VERSION? [y/N] " answer
+    read -r -p "Upload pypowerwall-server $VERSION? [y/N] " answer || answer=""
     case "$answer" in y|Y) ;; *) die "aborted - nothing uploaded" ;; esac
 fi
 echo "Uploading..."
