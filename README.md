@@ -280,16 +280,15 @@ answers "when did my Powerwall firmware update?" without extra tooling.
 
 **Timeouts:**
 ```bash
-PW_TIMEOUT=10                # Pypowerwall request timeout in seconds (default: 10)
+PW_TIMEOUT=10                # Local gateway request timeout in seconds (default: 10)
 ```
-`PW_TIMEOUT` is the timeout the server passes to the pypowerwall library for
-gateway/cloud requests. It deliberately defaults to **10 s**, higher than the
-library's own 5 s default: the server derives its per-step poll budget from
-`PW_TIMEOUT + 2s` so the library's internal timeout fires first (abandoned
-executor threads holding the library's per-function API lock were a real
-failure mode), and v1r/TEDAPI flows need more headroom than a bare local-API
-call. Raise it on slow links (e.g. remote FleetAPI sites) rather than
-watching intermittent 503s.
+`PW_TIMEOUT` is the HTTP timeout pypowerwall uses for local gateway
+connections (local, hybrid, TEDAPI full/v1r). Cloud and FleetAPI connections
+use the library default (5 s). Each poll step waits `max(5, PW_TIMEOUT + 2)`
+seconds (aggregates, vitals and strings: `max(10, PW_TIMEOUT + 2)`), so the
+library times out before the server gives up on the worker thread, and a whole
+poll is capped at `max(30, 3 × PW_CACHE_EXPIRE, 4 × (PW_TIMEOUT + 2))` seconds.
+Raise it if a slow local gateway logs poll timeouts.
 
 **Time-Series Storage (Daily Energy Stats):**
 ```bash
