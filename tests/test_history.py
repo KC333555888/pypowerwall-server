@@ -379,6 +379,63 @@ class TestDeviceTrend:
 # ---------------------------------------------------------------------------
 
 
+class TestDeviceTimezones:
+    """Daily device rollups are keyed by gateway-local day."""
+
+    @staticmethod
+    def _ts(day, hour, tz):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        local = datetime.fromisoformat(f"{day}T{hour:02d}:00")
+        return local.replace(tzinfo=ZoneInfo(tz)).timestamp()
+
+    @pytest.mark.asyncio
+    async def test_daily_window_uses_gateway_local_days(self, tmp_path):
+        tz = "Australia/Sydney"  # UTC+10/+11: local midnight is the UTC day before
+        store = store_for(tmp_path, device_interval="60s")
+        days = (("2026-03-09", 10.0), ("2026-03-10", 20.0), ("2026-03-11", 30.0))
+        for day, value in days:
+            await store.record_device_sample(
+                "gw1",
+                self._ts(day, 12, tz),
+                {(POD, "pack_temp_max"): value},
+                timezone=tz,
+            )
+        body = await store.get_device_trend(
+            metrics=["pack_temp_max"],
+            start=self._ts("2026-03-10", 0, tz),
+            end=self._ts("2026-03-10", 23, tz),
+            resolution="daily",
+            timezones={"gw1": tz},
+        )
+        (series,) = body["series"]
+        # Only the local day asked for: the UTC date of local midnight
+        # (2026-03-09) must not pull in the previous day
+        assert [p["day"] for p in series["points"]] == ["2026-03-10"]
+        assert series["points"][0]["ts"] == self._ts("2026-03-10", 12, tz)
+
+    @pytest.mark.asyncio
+    async def test_auto_resolution_judges_days_in_local_time(self, tmp_path):
+        tz = "America/Los_Angeles"  # evening local = next UTC day
+        store = store_for(tmp_path, device_interval="60s")
+        # First samples ever: 20:00-21:00 local on 03-09 (03:00+ UTC on 03-10)
+        first = self._ts("2026-03-09", 20, tz)
+        for i in range(60):
+            await store.record_device_sample(
+                "gw1", first + i * 60, {(POD, "pack_temp_max"): 25.0}, timezone=tz
+            )
+        # Window starts well before the first sample; there is no older daily
+        # history, so auto must stay raw (in UTC the 03-09 rollup looked older)
+        body = await store.get_device_trend(
+            metrics=["pack_temp_max"],
+            start=first - 6 * 3600,
+            end=first + 3600,
+            timezones={"gw1": tz},
+        )
+        assert body["resolution"] == "raw"
+
+
 class TestDailyRange:
     @pytest.mark.asyncio
     async def test_start_end(self, tmp_path):
@@ -417,6 +474,12 @@ class TestHistoryAPI:
         assert resp.json()["days"] == []
         assert client.get("/api/timeseries/daily?start=2026-1-1").status_code == 422
         assert client.get("/api/timeseries/daily?end=yesterday").status_code == 422
+
+    def test_daily_rejects_impossible_dates(self, client):
+        # Well-formed but not a real calendar date
+        assert client.get("/api/timeseries/daily?start=2026-02-31").status_code == 422
+        assert client.get("/api/timeseries/daily?end=2026-13-01").status_code == 422
+        assert client.get("/api/timeseries/daily?start=2024-02-29").status_code == 200
 
     def test_devices_endpoint(self, client):
         body = client.get("/api/timeseries/devices").json()

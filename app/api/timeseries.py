@@ -50,7 +50,8 @@ Design Notes:
 
 import re
 import time
-from typing import List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -63,10 +64,31 @@ _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _check_day(value: Optional[str], name: str) -> Optional[str]:
-    """Validate a YYYY-MM-DD query parameter (422 on bad input)."""
-    if value is not None and not _DAY_RE.match(value):
-        raise HTTPException(status_code=422, detail=f"{name} must be YYYY-MM-DD")
+    """Validate a YYYY-MM-DD query parameter as a real calendar date.
+
+    Raises 422 on bad input, including well-formed but impossible dates
+    such as 2026-02-31 (they would otherwise silently match nothing).
+    """
+    if value is None:
+        return value
+    try:
+        if not _DAY_RE.match(value):
+            raise ValueError
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"{name} must be a valid YYYY-MM-DD date"
+        )
     return value
+
+
+def _gateway_timezones() -> Dict[str, str]:
+    """Configured timezone per gateway (daily rollups use local days)."""
+    return {
+        gateway_id: gateway.timezone
+        for gateway_id, gateway in gateway_manager.gateways.items()
+        if getattr(gateway, "timezone", None)
+    }
 
 
 def _split(value: Optional[str]) -> Optional[List[str]]:
@@ -204,4 +226,5 @@ async def get_device_trend(
         end=end,
         hours=hours,
         resolution=resolution,
+        timezones=_gateway_timezones(),
     )

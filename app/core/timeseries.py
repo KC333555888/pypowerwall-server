@@ -912,6 +912,7 @@ class TimeSeriesStore:
         end: Optional[float] = None,
         hours: int = 24,
         resolution: str = "auto",
+        timezones: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Device signal history for charting, one entry per series.
 
@@ -928,6 +929,10 @@ class TimeSeriesStore:
             end:        Window end (epoch seconds); default now.
             hours:      Window length when no explicit start.
             resolution: "auto", "raw" or "daily".
+            timezones:  Gateway ID -> timezone name. Daily rollups are keyed
+                        by gateway-local day, so the window bounds are
+                        converted to local days per gateway (UTC when a
+                        gateway is missing).
         """
         if not self.enabled:
             return {"enabled": False, "series": [], "resolution": None}
@@ -943,6 +948,7 @@ class TimeSeriesStore:
                 end,
                 hours,
                 resolution,
+                dict(timezones or {}),
             ),
         )
 
@@ -955,7 +961,9 @@ class TimeSeriesStore:
         end: Optional[float],
         hours: int,
         resolution: str,
+        timezones: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
+        timezones = timezones or {}
         now = time.time()
         end = float(end) if end is not None else now + 300.0
         start = float(start) if start is not None else end - max(1, hours) * 3600.0
@@ -984,10 +992,17 @@ class TimeSeriesStore:
                     return result
                 ids = [row["series_id"] for row in series_rows]
                 marks = ",".join("?" * len(ids))
+                # Series per gateway: daily rollups use gateway-local days
+                by_gateway: Dict[str, List[int]] = {}
+                for row in series_rows:
+                    by_gateway.setdefault(row["gateway_id"], []).append(
+                        row["series_id"]
+                    )
+                zones = {gw: _get_zone(timezones.get(gw)) for gw in by_gateway}
 
                 if resolution not in ("raw", "daily"):
                     resolution = self._pick_device_resolution(
-                        conn, ids, marks, start, span
+                        conn, by_gateway, zones, start, span
                     )
                 points: Dict[int, List[Dict[str, Any]]] = {i: [] for i in ids}
                 if resolution == "raw":
@@ -1018,23 +1033,29 @@ class TimeSeriesStore:
                         )
                     result["bucket_seconds"] = bucket
                 else:
-                    # Local days; UTC dates of the window bounds are close
-                    # enough and the rows carry their own day label.
-                    lo = datetime.fromtimestamp(start, _UTC).strftime("%Y-%m-%d")
-                    hi = datetime.fromtimestamp(end, _UTC).strftime("%Y-%m-%d")
-                    rows = conn.execute(
-                        "SELECT series_id, day, min_value, max_value, "
-                        "sum_value / count AS avg_v FROM device_daily "
-                        f"WHERE series_id IN ({marks}) AND day>=? AND day<=? "
-                        "ORDER BY series_id, day",
-                        (*ids, lo, hi),
-                    ).fetchall()
-                    for row in rows:
+                    # Rows are keyed by gateway-local day: convert the window
+                    # bounds to local days in each gateway's timezone.
+                    rows = []
+                    for gw, gw_ids in by_gateway.items():
+                        zone = zones[gw]
+                        lo = _local_date(start, zone).isoformat()
+                        hi = _local_date(min(end, now), zone).isoformat()
+                        gw_marks = ",".join("?" * len(gw_ids))
+                        rows.extend(
+                            (zone, row)
+                            for row in conn.execute(
+                                "SELECT series_id, day, min_value, max_value, "
+                                "sum_value / count AS avg_v FROM device_daily "
+                                f"WHERE series_id IN ({gw_marks}) "
+                                "AND day>=? AND day<=? ORDER BY series_id, day",
+                                (*gw_ids, lo, hi),
+                            ).fetchall()
+                        )
+                    for zone, row in rows:
                         noon = (
                             datetime.strptime(row["day"], "%Y-%m-%d")
-                            .replace(tzinfo=_UTC)
+                            .replace(hour=12, tzinfo=zone)
                             .timestamp()
-                            + 43200.0
                         )
                         points[row["series_id"]].append(
                             {
@@ -1068,8 +1089,8 @@ class TimeSeriesStore:
     @staticmethod
     def _pick_device_resolution(
         conn: sqlite3.Connection,
-        ids: List[int],
-        marks: str,
+        by_gateway: Dict[str, List[int]],
+        zones: Dict[str, ZoneInfo],
         start: float,
         span: float,
     ) -> str:
@@ -1077,24 +1098,34 @@ class TimeSeriesStore:
 
         A window that starts before the oldest raw sample still reads raw if
         there is no older daily history either (a fresh install should show
-        its first hour at full detail, not as one daily point).
+        its first hour at full detail, not as one daily point). Daily rows
+        are keyed by gateway-local day, so "older" is judged per gateway in
+        its own timezone.
         """
         if span > DEVICE_RAW_MAX_SPAN:
             return "daily"
-        oldest = conn.execute(
-            f"SELECT MIN(ts) FROM device_samples WHERE series_id IN ({marks})",
-            ids,
-        ).fetchone()[0]
-        if oldest is None:
+        oldest_all: Optional[float] = None
+        older_daily = False
+        for gw, gw_ids in by_gateway.items():
+            marks = ",".join("?" * len(gw_ids))
+            oldest = conn.execute(
+                f"SELECT MIN(ts) FROM device_samples WHERE series_id IN ({marks})",
+                gw_ids,
+            ).fetchone()[0]
+            if oldest is None:
+                continue
+            oldest_all = oldest if oldest_all is None else min(oldest_all, oldest)
+            oldest_day = _local_date(oldest, zones[gw]).isoformat()
+            if conn.execute(
+                "SELECT 1 FROM device_daily "
+                f"WHERE series_id IN ({marks}) AND day < ? LIMIT 1",
+                (*gw_ids, oldest_day),
+            ).fetchone():
+                older_daily = True
+        if oldest_all is None:
             return "daily"
-        if start >= oldest - 3600:
+        if start >= oldest_all - 3600:
             return "raw"
-        oldest_day = datetime.fromtimestamp(oldest, _UTC).strftime("%Y-%m-%d")
-        older_daily = conn.execute(
-            "SELECT 1 FROM device_daily "
-            f"WHERE series_id IN ({marks}) AND day < ? LIMIT 1",
-            (*ids, oldest_day),
-        ).fetchone()
         return "daily" if older_daily else "raw"
 
     # ------------------------------------------------------------------
