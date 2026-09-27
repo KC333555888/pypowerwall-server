@@ -1015,7 +1015,11 @@ class GatewayManager:
                     # health counters (issue #87) — those stay driven by the
                     # mode/reserve path so failure thresholds keep their
                     # 2-calls-per-cycle semantics.
-                    grid_func = getattr(self._cloud_control, "get_grid_charging", None)
+                    grid_func = (
+                        getattr(self._cloud_control, "get_grid_charging", None)
+                        if _grid_controls_supported(self._cloud_control)
+                        else None
+                    )
                     if grid_func is not None:
                         cloud_grid_charging = await asyncio.wait_for(
                             loop.run_in_executor(self._executor, grid_func),
@@ -1031,7 +1035,11 @@ class GatewayManager:
                     )
                 try:
                     # Same supplementary-read contract as grid charging above.
-                    export_func = getattr(self._cloud_control, "get_grid_export", None)
+                    export_func = (
+                        getattr(self._cloud_control, "get_grid_export", None)
+                        if _grid_controls_supported(self._cloud_control)
+                        else None
+                    )
                     if export_func is not None:
                         cloud_grid_export = await asyncio.wait_for(
                             loop.run_in_executor(self._executor, export_func),
@@ -1085,7 +1093,11 @@ class GatewayManager:
                     )
                 if isinstance(local_grid_charging, bool):
                     data.grid_charging = local_grid_charging
-                elif local_grid_charging is None and self._cloud_control is not None:
+                elif (
+                    local_grid_charging is None
+                    and self._cloud_control is not None
+                    and _grid_controls_supported(self._cloud_control)
+                ):
                     grid_func = getattr(self._cloud_control, "get_grid_charging", None)
                     if grid_func is not None:
                         cloud_grid_charging = await asyncio.wait_for(
@@ -1113,7 +1125,11 @@ class GatewayManager:
                     )
                 if isinstance(local_grid_export, str) and local_grid_export:
                     data.grid_export = local_grid_export
-                elif local_grid_export is None and self._cloud_control is not None:
+                elif (
+                    local_grid_export is None
+                    and self._cloud_control is not None
+                    and _grid_controls_supported(self._cloud_control)
+                ):
                     export_func = getattr(self._cloud_control, "get_grid_export", None)
                     if export_func is not None:
                         cloud_grid_export = await asyncio.wait_for(

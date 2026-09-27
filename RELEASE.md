@@ -1,6 +1,11 @@
 # Release Notes
 
 ## Version History
+### [0.7.1] - Upcoming
+
+**Fixed:**
+- **Cloud-control fallback no longer logs grid-getter errors** — when the hybrid cloud-control connection (cloud auth + FleetAPI both failing) degrades to pypowerwall's local client, `get_grid_charging()`/`get_grid_export()` are unsupported stubs that logged an ERROR on every poll cycle. All four cloud-control grid-getter call sites (including the Basic LAN supplementary reads) are now gated on the grid-controls support check, silencing the repeat of the #114 log spam via the cloud-control path. (#114, follow-up to #117)
+
 ### [0.7.0] - 2026-09-26
 
 **Added:**
