@@ -2,6 +2,11 @@
 
 ## Version History
 
+### [0.7.0] - Upcoming
+
+**Added:**
+- **MQTT: grid and backup sensors** — four new Home Assistant auto-discovery entities, published under `{prefix}/{gw}/` and included in the `status` summary JSON: `grid_connected` (binary sensor, `connectivity`, derived from `grid_status == "UP"`), `grid_charging` (binary sensor, generic On/Off), `grid_export` (`battery_ok`/`pv_only`/`never`, text sensor) and `time_remaining` (hours, `duration`). Like the existing optional topics, each is published only while its value is available, and the retained value persists until the gateway's `availability` goes offline. Existing topics, payloads and entity IDs are unchanged. Thanks @erikgieseler (#113)
+
 ### [0.6.7] - 2026-09-26
 
 **Added:**
