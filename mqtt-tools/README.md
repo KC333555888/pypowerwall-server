@@ -318,8 +318,8 @@ INFO  MQTT HA discovery published for gateway 'default' (23 entities)
 
 - Go to **Settings → Devices & Services → MQTT → Devices**.
 - Look for a device named after your gateway (e.g. "Home Powerwall").
-- All 23 base entities appear grouped on the device card (solar string sensors
-  are added when the gateway reports strings):
+- All 23 base entities appear grouped on the device card (solar string and
+  Tesla Remote Meter sensors are added when the gateway reports them):
 
   | Entity | Device Class | Unit |
   |--------|-------------|------|
