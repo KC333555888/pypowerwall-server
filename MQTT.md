@@ -229,13 +229,13 @@ more than one meter):
 | `pypowerwall/{gw}/meters/remote/{din}/ct{n}/voltage` | `122.68` | `V` |
 | `pypowerwall/{gw}/meters/remote/{din}/ct{n}/current` | `0.95` | `A` |
 | `pypowerwall/{gw}/meters/remote/{din}/ct{n}/power` | `158.3` | `W` |
-| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_imported` | `12073.9` | `Wh` (lifetime, converted from Tesla's watt-seconds) |
-| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_exported` | `47.8` | `Wh` (lifetime, converted from Tesla's watt-seconds) |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_imported` | `12074` | `Wh` (lifetime, whole Wh, converted from Tesla's watt-seconds) |
+| `pypowerwall/{gw}/meters/remote/{din}/ct{n}/energy_exported` | `48` | `Wh` (lifetime, whole Wh, converted from Tesla's watt-seconds) |
 | `pypowerwall/{gw}/meters/remote/{din}/ct{n}` | `{"InstVoltage": ..., "InstCurrent": ..., "InstRealPower": ..., "Location": "solar", ...}` | JSON |
 
-Sourced from `pw.vitals()`'s `TRM--{din}` blocks — requires a pypowerwall
-version that surfaces remote meter data, and a gateway with at least one
-remote meter configured; silently absent otherwise, same as solar strings.
+Sourced from `pw.vitals()`'s `TRM--{din}` blocks — requires pypowerwall
+≥ 0.18.2 in TEDAPI modes (Basic LAN skips vitals) and a gateway with at least
+one remote meter configured; silently absent otherwise, same as solar strings.
 
 ---
 
@@ -296,6 +296,21 @@ Binary sensors:
 | Gateway Online | `connectivity` |
 | Grid Connected | `connectivity` |
 | Grid Charging | — |
+
+Remote meter sensors (one set of five per CT, `entity_category: diagnostic`,
+named e.g. `Remote Meter EM…B10BC CT0 (solar) Voltage`, unique ID
+`pypowerwall_{gw}_remote_meter_{din_slug}_ct{n}_{metric}` where `din_slug` is
+the DIN lower-cased with non-alphanumerics replaced by `_`):
+| Sensor | HA device_class | Unit | state_class |
+|--------|----------------|------|-------------|
+| Voltage | `voltage` | `V` | `measurement` |
+| Current | `current` | `A` | `measurement` |
+| Power | `power` | `W` | `measurement` |
+| Energy Imported | `energy` | `Wh` | `total_increasing` |
+| Energy Exported | `energy` | `Wh` | `total_increasing` |
+
+Solar-string and remote-meter sensors are discovered when a poll first
+reports them, including on a later poll if the first one didn't.
 
 ---
 

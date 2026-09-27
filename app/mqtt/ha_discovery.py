@@ -83,7 +83,9 @@ logger = logging.getLogger(__name__)
 _TRM_CT_FIELD_RE = re.compile(r"^TRM_CT(\d+)_(.+)$")
 
 
-def extract_remote_meters(vitals: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+def extract_remote_meters(
+    vitals: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Parse Tesla Remote Meter data out of a pw.vitals() payload.
 
     pypowerwall surfaces each wireless CT remote meter (config.json type
@@ -105,13 +107,21 @@ def extract_remote_meters(vitals: Optional[Dict[str, Any]]) -> Dict[str, Dict[st
     if not isinstance(vitals, dict):
         return meters
     for key, block in vitals.items():
-        if not isinstance(key, str) or not key.startswith("TRM--") or not isinstance(block, dict):
+        if (
+            not isinstance(key, str)
+            or not key.startswith("TRM--")
+            or not isinstance(block, dict)
+        ):
             continue
-        din = key[len("TRM--"):]
-        if not din:
+        din = key[len("TRM--") :]
+        # The DIN becomes an MQTT topic level: skip empty ones and any with
+        # topic separators/wildcards, which a broker would reject on publish
+        if not din or any(ch in din for ch in "/+#"):
             continue
         cts: Dict[str, Dict[str, Any]] = {}
         for field, value in block.items():
+            if not isinstance(field, str):
+                continue
             match = _TRM_CT_FIELD_RE.match(field)
             if not match:
                 continue
@@ -120,6 +130,24 @@ def extract_remote_meters(vitals: Optional[Dict[str, Any]]) -> Dict[str, Dict[st
         if cts:
             meters[din] = cts
     return meters
+
+
+def discovery_signature(
+    strings: Optional[Dict[str, Any]], vitals: Optional[Dict[str, Any]]
+) -> frozenset:
+    """The optional (data-dependent) entities a snapshot would announce.
+
+    Solar strings and remote-meter CTs are only discovered when a poll
+    reports them. The publisher compares this signature with what it has
+    already announced, so a family first seen on a later poll (e.g. after the
+    first poll's vitals timed out) still gets discovered.
+    """
+    signature = set()
+    if isinstance(strings, dict):
+        signature.update(("string", sid) for sid in strings)
+    for din, cts in extract_remote_meters(vitals).items():
+        signature.update(("remote_meter", din, ct) for ct in cts)
+    return frozenset(signature)
 
 
 def _device_block(gateway_id: str, gateway_name: str, version: Optional[str]) -> dict:
@@ -500,10 +528,22 @@ def build_discovery_payloads(
             ("voltage", "Voltage", "V", "voltage", "measurement", "mdi:lightning-bolt"),
             ("current", "Current", "A", "current", "measurement", "mdi:current-ac"),
             ("power", "Power", "W", "power", "measurement", "mdi:flash"),
-            ("energy_imported", "Energy Imported", "Wh", "energy", "total_increasing",
-             "mdi:transmission-tower-import"),
-            ("energy_exported", "Energy Exported", "Wh", "energy", "total_increasing",
-             "mdi:transmission-tower-export"),
+            (
+                "energy_imported",
+                "Energy Imported",
+                "Wh",
+                "energy",
+                "total_increasing",
+                "mdi:transmission-tower-import",
+            ),
+            (
+                "energy_exported",
+                "Energy Exported",
+                "Wh",
+                "energy",
+                "total_increasing",
+                "mdi:transmission-tower-export",
+            ),
         ]
         for din, cts in remote_meters.items():
             # din looks like "2002069-00-E--EM4260230B10BC" - use the serial
@@ -516,16 +556,25 @@ def build_discovery_payloads(
                 if location:
                     label = f"{label} ({location})"
                 m_prefix = f"{meters_prefix}/{din}/ct{ct_index}"
-                for metric, metric_label, unit, dc, state_class, icon in _REMOTE_METER_METRICS:
-                    results.append(sensor(
-                        f"remote_meter_{din_slug}_ct{ct_index}_{metric}",
-                        f"{label} {metric_label}",
-                        f"{m_prefix}/{metric}",
-                        unit=unit,
-                        device_class=dc,
-                        state_class=state_class,
-                        icon=icon,
-                        entity_category="diagnostic",
-                    ))
+                for (
+                    metric,
+                    metric_label,
+                    unit,
+                    dc,
+                    state_class,
+                    icon,
+                ) in _REMOTE_METER_METRICS:
+                    results.append(
+                        sensor(
+                            f"remote_meter_{din_slug}_ct{ct_index}_{metric}",
+                            f"{label} {metric_label}",
+                            f"{m_prefix}/{metric}",
+                            unit=unit,
+                            device_class=dc,
+                            state_class=state_class,
+                            icon=icon,
+                            entity_category="diagnostic",
+                        )
+                    )
 
     return results

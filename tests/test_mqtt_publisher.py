@@ -671,6 +671,7 @@ class TestMqttRemoteMeterTopics:
 
     def _make_publisher(self, monkeypatch) -> MqttPublisher:
         from app.config import settings
+
         monkeypatch.setattr(settings, "mqtt_host", "localhost")
         monkeypatch.setattr(settings, "mqtt_port", 1883)
         monkeypatch.setattr(settings, "mqtt_topic_prefix", "pypowerwall")
@@ -702,20 +703,24 @@ class TestMqttRemoteMeterTopics:
             vitals=vitals,
             timestamp=1_000_000.0,
         )
-        return GatewayStatus(gateway=gateway, data=data, online=True, last_updated=1_000_000.0)
+        return GatewayStatus(
+            gateway=gateway, data=data, online=True, last_updated=1_000_000.0
+        )
 
     @pytest.mark.asyncio
     async def test_per_ct_topics_published(self, monkeypatch):
         """Voltage/current/power topics are published per remote-meter CT."""
         pub = self._make_publisher(monkeypatch)
-        status = self._make_status_with_vitals({
-            "TRM--2002069-00-E--EM4260230B10BC": {
-                "TRM_CT0_InstVoltage": 122.68,
-                "TRM_CT0_InstCurrent": 0.95,
-                "TRM_CT0_InstRealPower": 158.26,
-                "TRM_CT0_Location": "solar",
-            },
-        })
+        status = self._make_status_with_vitals(
+            {
+                "TRM--2002069-00-E--EM4260230B10BC": {
+                    "TRM_CT0_InstVoltage": 122.68,
+                    "TRM_CT0_InstCurrent": 0.95,
+                    "TRM_CT0_InstRealPower": 158.26,
+                    "TRM_CT0_Location": "solar",
+                },
+            }
+        )
         await pub.publish_gateway("test-gw", status)
 
         published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
@@ -730,30 +735,35 @@ class TestMqttRemoteMeterTopics:
         """EnergyImportedWs/EnergyExportedWs (Tesla's native unit) are
         published in Wh, matching every other energy sensor in this file."""
         pub = self._make_publisher(monkeypatch)
-        status = self._make_status_with_vitals({
-            "TRM--2002069-00-E--EM4260230B10BC": {
-                "TRM_CT0_EnergyImportedWs": 43466036,
-                "TRM_CT0_EnergyExportedWs": 171954,
-            },
-        })
+        status = self._make_status_with_vitals(
+            {
+                "TRM--2002069-00-E--EM4260230B10BC": {
+                    "TRM_CT0_EnergyImportedWs": 43466036,
+                    "TRM_CT0_EnergyExportedWs": 171954,
+                },
+            }
+        )
         await pub.publish_gateway("test-gw", status)
 
         published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
         prefix = "pypowerwall/test-gw/meters/remote/2002069-00-E--EM4260230B10BC/ct0"
 
-        assert published[f"{prefix}/energy_imported"] == f"{43466036 / 3600:.1f}"
-        assert published[f"{prefix}/energy_exported"] == f"{171954 / 3600:.1f}"
+        # Whole Wh, like the other lifetime-energy topics
+        assert published[f"{prefix}/energy_imported"] == "12074"
+        assert published[f"{prefix}/energy_exported"] == "48"
 
     @pytest.mark.asyncio
     async def test_per_ct_json_topic(self, monkeypatch):
         """Full per-CT data is published as JSON on the bare CT topic."""
         pub = self._make_publisher(monkeypatch)
-        status = self._make_status_with_vitals({
-            "TRM--2002069-00-E--EM4260230B10BC": {
-                "TRM_CT0_InstVoltage": 122.68,
-                "TRM_CT0_Location": "solar",
-            },
-        })
+        status = self._make_status_with_vitals(
+            {
+                "TRM--2002069-00-E--EM4260230B10BC": {
+                    "TRM_CT0_InstVoltage": 122.68,
+                    "TRM_CT0_Location": "solar",
+                },
+            }
+        )
         await pub.publish_gateway("test-gw", status)
 
         published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
@@ -768,21 +778,72 @@ class TestMqttRemoteMeterTopics:
         """A meter with two active CTs, plus a second meter, both publish
         independently keyed topics."""
         pub = self._make_publisher(monkeypatch)
-        status = self._make_status_with_vitals({
-            "TRM--DIN0000000000000000000001": {
-                "TRM_CT0_InstVoltage": 120.0,
-                "TRM_CT1_InstVoltage": 121.0,
-            },
-            "TRM--DIN0000000000000000000002": {
-                "TRM_CT0_InstVoltage": 240.0,
-            },
-        })
+        status = self._make_status_with_vitals(
+            {
+                "TRM--DIN0000000000000000000001": {
+                    "TRM_CT0_InstVoltage": 120.0,
+                    "TRM_CT1_InstVoltage": 121.0,
+                },
+                "TRM--DIN0000000000000000000002": {
+                    "TRM_CT0_InstVoltage": 240.0,
+                },
+            }
+        )
         await pub.publish_gateway("test-gw", status)
 
         published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
-        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct0/voltage"] == "120.00"
-        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct1/voltage"] == "121.00"
-        assert published["pypowerwall/test-gw/meters/remote/DIN0000000000000000000002/ct0/voltage"] == "240.00"
+        assert (
+            published[
+                "pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct0/voltage"
+            ]
+            == "120.00"
+        )
+        assert (
+            published[
+                "pypowerwall/test-gw/meters/remote/DIN0000000000000000000001/ct1/voltage"
+            ]
+            == "121.00"
+        )
+        assert (
+            published[
+                "pypowerwall/test-gw/meters/remote/DIN0000000000000000000002/ct0/voltage"
+            ]
+            == "240.00"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_value_skips_topic_not_json(self, monkeypatch):
+        """A non-numeric reading skips that topic; the per-CT JSON still goes out."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals(
+            {
+                "TRM--DIN1": {"TRM_CT0_InstVoltage": "n/a", "TRM_CT0_InstCurrent": 1.5},
+            }
+        )
+        await pub.publish_gateway("test-gw", status)
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        prefix = "pypowerwall/test-gw/meters/remote/DIN1/ct0"
+        assert f"{prefix}/voltage" not in published
+        assert published[f"{prefix}/current"] == "1.50"
+        assert json.loads(published[prefix])["InstVoltage"] == "n/a"
+
+    @pytest.mark.asyncio
+    async def test_none_energy_is_not_published(self, monkeypatch):
+        """pypowerwall reports EnergyExportedWs as None when the CT has none."""
+        pub = self._make_publisher(monkeypatch)
+        status = self._make_status_with_vitals(
+            {
+                "TRM--DIN1": {
+                    "TRM_CT0_EnergyImportedWs": 7200,
+                    "TRM_CT0_EnergyExportedWs": None,
+                },
+            }
+        )
+        await pub.publish_gateway("test-gw", status)
+        published = {c.args[0]: c.args[1] for c in pub._client.publish.call_args_list}
+        prefix = "pypowerwall/test-gw/meters/remote/DIN1/ct0"
+        assert published[f"{prefix}/energy_imported"] == "2"
+        assert f"{prefix}/energy_exported" not in published
 
     @pytest.mark.asyncio
     async def test_no_vitals_publishes_nothing_extra(self, monkeypatch):
@@ -800,9 +861,13 @@ class TestMqttRemoteMeterTopics:
         """Other device blocks (TEPINV--, TESYNC--, ...) in vitals must not
         be mistaken for remote meters."""
         pub = self._make_publisher(monkeypatch)
-        status = self._make_status_with_vitals({
-            "TEPINV--1707000-21-M--TG126233000WMD": {"PINV_State": "PINV_GridFollowing"},
-        })
+        status = self._make_status_with_vitals(
+            {
+                "TEPINV--1707000-21-M--TG126233000WMD": {
+                    "PINV_State": "PINV_GridFollowing"
+                },
+            }
+        )
         await pub.publish_gateway("test-gw", status)
 
         published = [c.args[0] for c in pub._client.publish.call_args_list]
