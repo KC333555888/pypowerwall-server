@@ -2,7 +2,7 @@
 import asyncio
 import pytest
 from unittest.mock import Mock
-from app.core.gateway_manager import gateway_manager
+from app.core.gateway_manager import GatewayManager, gateway_manager
 from app.core.scaling import raw_to_tesla_battery_percent
 
 
@@ -940,7 +940,12 @@ async def test_transient_version_miss_does_not_relog(caplog, mock_gateway_manage
 # Grid charging/export getter availability (issue #114)
 # ---------------------------------------------------------------------------
 
-def _add_grid_gateway(mock_gateway_manager, mock_pypowerwall, gw_id="grid-test"):
+
+def _add_grid_gateway(
+    mock_gateway_manager: GatewayManager,
+    mock_pypowerwall: Mock,
+    gw_id: str = "grid-test",
+) -> str:
     """Register a connected gateway for grid-control polling tests."""
     from app.models.gateway import Gateway, GatewayStatus
 
@@ -969,11 +974,92 @@ def test_grid_controls_supported_predicate():
     for mode in ("v1r", "full"):
         pw = Mock(tedapi_mode=mode, cloudmode=False, fleetapi=False)
         assert _grid_controls_supported(pw) is True
-    assert _grid_controls_supported(Mock(tedapi_mode="off", cloudmode=True, fleetapi=False)) is True
-    assert _grid_controls_supported(Mock(tedapi_mode="hybrid", cloudmode=False, fleetapi=True)) is True
+    assert (
+        _grid_controls_supported(
+            Mock(tedapi_mode="off", cloudmode=True, fleetapi=False)
+        )
+        is True
+    )
+    assert (
+        _grid_controls_supported(
+            Mock(tedapi_mode="hybrid", cloudmode=False, fleetapi=True)
+        )
+        is True
+    )
 
     # Defensive: missing attributes (unexpected client) -> not supported
     assert _grid_controls_supported(object()) is False
+
+
+@pytest.mark.parametrize(
+    "kwargs, local_stub",
+    [
+        pytest.param({"host": "1.2.3.4", "password": "abcde"}, True, id="local"),
+        pytest.param(
+            {"host": "1.2.3.4", "password": "abcde", "gw_pwd": "XYZ12345"},
+            True,
+            id="hybrid",
+        ),
+        pytest.param({"host": "192.168.91.1", "gw_pwd": "XYZ12345"}, False, id="full"),
+        pytest.param(
+            {"host": "1.2.3.4", "gw_pwd": "XYZ12345", "rsa_key_path": "/k.pem"},
+            False,
+            id="v1r",
+        ),
+        pytest.param(
+            {"host": "", "email": "a@b.c", "cloudmode": True}, False, id="cloud"
+        ),
+        pytest.param(
+            {"host": "", "email": "a@b.c", "cloudmode": True, "fleetapi": True},
+            False,
+            id="fleetapi",
+        ),
+    ],
+)
+def test_grid_controls_supported_matches_library_routing(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict, local_stub: bool
+) -> None:
+    """Contract with the pinned pypowerwall: the predicate is False exactly when
+    the library routes the connection to PyPowerwallLocal, whose grid getters
+    are ERROR-logging stubs (#114). Builds a real Powerwall with the backend
+    classes replaced by spec'd mocks, so connect() runs the library's own
+    routing without network access."""
+    from unittest.mock import MagicMock
+
+    import pypowerwall
+    from pypowerwall.cloud.pypowerwall_cloud import PyPowerwallCloud
+    from pypowerwall.fleetapi.pypowerwall_fleetapi import PyPowerwallFleetAPI
+    from pypowerwall.local.pypowerwall_local import PyPowerwallLocal
+    from pypowerwall.tedapi.pypowerwall_tedapi import PyPowerwallTEDAPI
+
+    from app.core.gateway_manager import _grid_controls_supported
+
+    def backend(real):
+        def ctor(*args, **kw):
+            client = MagicMock(spec=real)
+            client.tedapi = real is PyPowerwallTEDAPI or "gw_pwd" in kwargs
+            client.siteid = 1
+            return client
+
+        return ctor
+
+    for real in (
+        PyPowerwallLocal,
+        PyPowerwallTEDAPI,
+        PyPowerwallCloud,
+        PyPowerwallFleetAPI,
+    ):
+        monkeypatch.setattr(pypowerwall, real.__name__, backend(real))
+    monkeypatch.setattr(
+        pypowerwall.Powerwall, "_validate_init_configuration", lambda self: None
+    )
+
+    pw = pypowerwall.Powerwall(**kwargs)
+
+    # The library routes this config where we expect (so a routing change in
+    # a future pin fails here), and the predicate agrees with the routing
+    assert isinstance(pw.client, PyPowerwallLocal) is local_stub
+    assert _grid_controls_supported(pw) is (not local_stub)
 
 
 @pytest.mark.asyncio

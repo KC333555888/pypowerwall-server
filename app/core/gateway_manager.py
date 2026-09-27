@@ -127,7 +127,6 @@ def _grid_controls_supported(pw: Any) -> bool:
     return getattr(pw, "tedapi_mode", None) in _GRID_CONTROL_MODES
 
 
-
 class IslandingCommandInProgressError(RuntimeError):
     """Raised when an earlier islanding command is still running after timeout."""
 
@@ -915,8 +914,9 @@ class GatewayManager:
         last_data = self._last_successful_data.get(gateway_id)
         # Grid charging/export are deliberately NOT pre-filled here: unlike
         # mode (locally re-polled every cycle), these can be cloud-sourced on
-        # TEDAPI (no local endpoint), so a pre-filled value would serve an old
-        # cloud reading as fresh once the cloud link drops. /api/operation
+        # plain local/hybrid clients (library getters are stubs, #114), so a
+        # pre-filled value would serve an old cloud reading as fresh once the
+        # cloud link drops. /api/operation
         # already serves the timestamped _cloud_grid_* fallback stale-marked
         # instead — same no-silent-freeze contract as mode/reserve (#87).
         if last_data and last_data.mode and not basic_lan:
@@ -2053,8 +2053,12 @@ class GatewayManager:
             Result of the method call, or None on error/timeout
         """
         if method in _ISLANDING_METHODS:
+            # "In progress" means the dispatched future hasn't finished. Check
+            # done() rather than relying on the clear-on-completion callback
+            # below: asyncio runs done-callbacks on a later loop iteration, and
+            # on Python 3.13 local_control() returns before that has happened.
             in_flight = self._islanding_futures.get(gateway_id)
-            if in_flight is not None:
+            if in_flight is not None and not in_flight.done():
                 raise IslandingCommandInProgressError(
                     "An islanding command is still in progress"
                 )
