@@ -136,12 +136,16 @@ fi
 
 confirm "Build and push to Docker Hub?"
 
+# --no-cache skips reading any cache; production images always carry inline
+# cache metadata, so the release after a --no-cache build is fast again
+CACHE_ARGS=(--pull)
 if [ -n "$NO_CACHE_FLAG" ]; then
-  CACHE_ARGS=(--pull --no-cache)
+  CACHE_ARGS+=(--no-cache)
 elif [ "$RELEASE_TYPE" == "2" ]; then
-  CACHE_ARGS=(--pull --cache-from "type=registry,ref=${IMAGE}:latest" --cache-to type=inline)
-else
-  CACHE_ARGS=(--pull)
+  CACHE_ARGS+=(--cache-from "type=registry,ref=${IMAGE}:latest")
+fi
+if [ "$RELEASE_TYPE" == "2" ]; then
+  CACHE_ARGS+=(--cache-to type=inline)
 fi
 
 echo "* BUILD ${IMAGE}:${VER} (using ${DOCKERFILE}; ${CACHE_ARGS[*]})"
