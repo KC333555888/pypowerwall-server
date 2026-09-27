@@ -92,7 +92,7 @@ docker run -d \
 
 > **Note:** `PW_WIFI_HOST` is the IP address pypowerwall uses for the WiFi fallback path in v1r mode. It defaults to `192.168.91.1`. Only set it if your gateway is on a different IP (e.g. behind a travel router).
 >
-> **Note:** The `-v pws-data:/data` mount persists the daily energy history (SQLite time-series store) across container upgrades. Omit it if you run with `PW_TIMESERIES_RETENTION=-1` (subsystem disabled).
+> **Note:** The `-v pws-data:/data` mount persists the daily energy, temperature and fan history (SQLite time-series store) across container upgrades. Omit it if you run with `PW_TIMESERIES_RETENTION=-1` (subsystem disabled).
 
 #### Basic LAN Mode (Powerwall 3, No Gateway Password or RSA Key)
 
@@ -323,21 +323,31 @@ file, no writes, UI panel hidden). Retention accepts `90s`, `48h`, `7d`,
 **Powerwall temperatures and fans.** The same store records each
 Powerwall's temperatures (battery pack max/min, shunt, inverter ambient;
 Powerwall 2 ambient) and inverter fans (speed in rpm and duty cycle in %)
-once per `PW_TIMESERIES_DEVICE_INTERVAL` (default 5s, every poll). The readings come from the vitals
-and fan data each poll already fetches, so this adds no gateway calls; they
-need a TEDAPI connection (Powerwall 3 temperatures need pypowerwall 0.17.4
-or later). Samples are kept for `PW_TIMESERIES_DEVICE_RETENTION`, about
-5 MB per Powerwall per day at 5s, so roughly 145 MB per unit at the 30-day
-default (set `PW_TIMESERIES_DEVICE_INTERVAL=60s` for ~12 MB). A daily low/average/high for every signal is kept alongside, under
-`PW_TIMESERIES_DAILY_RETENTION`, so long-range history survives the raw
-samples being pruned. Set `PW_TIMESERIES_DEVICE_RETENTION=-1` to stop
-recording them while keeping energy history.
+once per `PW_TIMESERIES_DEVICE_INTERVAL` (default 5s, i.e. every poll).
+The readings come from the vitals and fan data each poll already fetches,
+so this adds no gateway calls; they need a TEDAPI connection (Powerwall 3
+temperatures need pypowerwall 0.17.4 or later). A daily low/average/high
+for every signal is kept alongside, under `PW_TIMESERIES_DAILY_RETENTION`,
+so long-range history survives the raw samples being pruned. Set
+`PW_TIMESERIES_DEVICE_RETENTION=-1` to stop recording them while keeping
+energy history.
+
+Disk use for the raw samples, per Powerwall 3 (8 signals):
+
+| `PW_TIMESERIES_DEVICE_INTERVAL` | Per day | 7 days | 30 days (default retention) |
+|---|---|---|---|
+| `5s` (default) | ~5 MB | ~35 MB | ~145 MB |
+| `60s` | ~0.4 MB | ~3 MB | ~12 MB |
+
+On an SD card or other small disk, raise the interval or shorten
+`PW_TIMESERIES_DEVICE_RETENTION` (e.g. `7d`).
 
 **History page (`/history`).** Look up daily energy for any date range
 (24 hours to all stored history) with range totals, a per-day chart, a
 table and CSV download, plus temperature and fan charts with per-unit
 toggles, a °C/°F switch and low/average/high for the range. Ranges up to
-14 days use the minute-level samples; longer ranges use the daily
+14 days use the raw samples (averaged into steps of a minute or more,
+with the low/high of each step); longer ranges use the daily
 low/average/high. The range and gateway are kept in the URL, so a view can
 be bookmarked, e.g. `/history?range=90d`. Under `PROXY_BASE_URL` it is at
 `<base>/history`.
@@ -514,6 +524,8 @@ The default budget (1000 requests / 60s per IP) is set well above a normal dashb
 ## Console
 
 The management console is at `/console` (the Power Flow animation is at `/`).
+The **History** link in the console header (and on the Daily Energy card)
+opens the History page at `/history` (see **History page** under Environment Variables).
 
 ### Card Visibility and Kiosk Mode
 

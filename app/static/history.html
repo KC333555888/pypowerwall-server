@@ -1156,9 +1156,9 @@
             if (info.enabled === false) return 'Time-series storage is turned off. Remove <code>PW_TIMESERIES_RETENTION=-1</code> to record history.';
             if (info.device_enabled === false) return `${kind[0].toUpperCase() + kind.slice(1)} recording is turned off. Remove <code>PW_TIMESERIES_DEVICE_RETENTION=-1</code> to record it.`;
             if (kind === 'temperature') {
-                return 'No temperature history yet. Powerwall 3 temperatures need a TEDAPI connection (Wi-Fi or wired v1r); recording starts within a minute of the first poll.';
+                return 'No temperature history yet. Powerwall 3 temperatures need a TEDAPI connection (Wi-Fi or wired v1r); recording starts with the first poll.';
             }
-            return 'No fan history yet. Fan readings need a TEDAPI connection; recording starts within a minute of the first poll.';
+            return 'No fan history yet. Fan readings need a TEDAPI connection; recording starts with the first poll.';
         }
 
         function renderDeviceCards() {
@@ -1186,7 +1186,7 @@
             const daily = trend.resolution === 'daily';
             const retention = (state.devicesInfo || {}).retentionText;
             note.textContent = daily
-                ? `One point per day: daily average, hover for the day's low–high${retention ? ` · minute-level detail kept ${retention}` : ''}`
+                ? `One point per day: daily average, hover for the day's low–high${retention ? ` · detailed samples kept ${retention}` : ''}`
                 : `Averaged over ${Math.round((trend.bucket_seconds || 60) / 60)}-minute steps`;
 
             const controls = document.createElement('div');
