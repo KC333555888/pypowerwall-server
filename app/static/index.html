@@ -1712,6 +1712,15 @@
         .card.user-hidden {
             display: none !important;
         }
+        /* The two extra header links would push the header wider than the
+           page on narrow screens; let it wrap instead */
+        header {
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .header-links {
+            flex-wrap: wrap;
+        }
         /* When cards are hidden, the remaining cards in a row share its width
            (--card-span is set by applyCardLayout()). Desktop only: at 900px
            and below every card already spans the full width. */
@@ -1777,8 +1786,10 @@
             color: var(--text-primary);
         }
         /* Kiosk: no header or status banner, tighter margins, no hover glow */
+        /* The status banner stays visible while disconnected, so a wall
+           display never shows frozen data without a warning */
         body.kiosk header,
-        body.kiosk #status-banner {
+        body.kiosk #status-banner.connected {
             display: none;
         }
         body.kiosk .container {
@@ -1807,6 +1818,7 @@
             display: flex;
         }
         .kiosk-controls:hover,
+        .kiosk-controls:focus-within,
         .kiosk-controls.active {
             opacity: 1;
         }
@@ -1834,17 +1846,17 @@
                 <a href="{PROXY_BASE}/docs">API Docs</a>
                 <a href="{PROXY_BASE}/api/gateways">Gateways API</a>
                 <a href="https://github.com/jasonacox/pypowerwall-server" target="_blank">GitHub</a>
-                <a href="#" id="card-menu-toggle" title="Show or hide cards">Cards</a>
-                <a href="#" id="kiosk-toggle" title="Kiosk mode (Esc to exit)">Kiosk</a>
+                <a href="#" id="card-menu-toggle" role="button" aria-controls="card-menu" aria-expanded="false" title="Show or hide cards">Cards</a>
+                <a href="#" id="kiosk-toggle" role="button" title="Kiosk mode (Esc to exit)">Kiosk</a>
             </div>
         </header>
 
         <div class="kiosk-controls" id="kiosk-controls">
-            <button type="button" id="kiosk-cards-btn">Cards</button>
+            <button type="button" id="kiosk-cards-btn" aria-controls="card-menu" aria-expanded="false">Cards</button>
             <button type="button" id="kiosk-exit-btn">Exit kiosk</button>
         </div>
 
-        <div class="card-menu" id="card-menu" hidden>
+        <div class="card-menu" id="card-menu" role="group" aria-label="Card visibility" hidden>
             <h4>Show cards</h4>
             <div id="card-menu-list"></div>
             <hr>
@@ -5041,8 +5053,8 @@
         // energy, alerts, strings, health, control, powerwall, gateways, mqtt,
         // daily-energy.
         (function () {
-            const HIDDEN_KEY = 'pws.console.hiddenCards';
-            const KIOSK_KEY = 'pws.console.kiosk';
+            const HIDDEN_KEY = 'pw_console_hidden_cards';
+            const KIOSK_KEY = 'pw_console_kiosk';
             // Cards that share a row on desktop; remaining ones split its width
             const ROWS = [['power-flow', 'energy'], ['alerts', 'strings', 'health']];
 
@@ -5080,8 +5092,14 @@
             });
 
             let hidden;
-            try { hidden = new Set(urlHide || JSON.parse(storageGet(HIDDEN_KEY) || '[]')); }
-            catch (e) { hidden = new Set(); }
+            if (urlHide) {
+                hidden = new Set(urlHide);
+            } else {
+                let saved = [];
+                try { saved = JSON.parse(storageGet(HIDDEN_KEY) || '[]'); } catch (e) { /* ignore */ }
+                hidden = new Set(Array.isArray(saved)
+                    ? saved.filter(id => typeof id === 'string') : []);
+            }
             let kiosk = urlKiosk !== null ? urlKiosk : storageGet(KIOSK_KEY) === '1';
 
             function saveHidden() {
@@ -5160,21 +5178,53 @@
                 window.dispatchEvent(new Event('resize'));
             }
 
-            function toggleMenu(show) {
+            const openers = [
+                document.getElementById('card-menu-toggle'),
+                document.getElementById('kiosk-cards-btn'),
+            ];
+            let lastOpener = null;
+
+            // restoreFocus: return focus to the opener on close. Skipped for
+            // outside clicks, where focus should go wherever the user clicked.
+            function toggleMenu(show, opener, restoreFocus = true) {
                 const open = show !== undefined ? show : menu.hidden;
-                if (open) buildMenu();
+                if (open === !menu.hidden) return;
+                if (open) {
+                    lastOpener = opener || null;
+                    buildMenu();
+                }
                 menu.hidden = !open;
+                openers.forEach(el => el.setAttribute('aria-expanded', String(open)));
+                if (open) {
+                    const first = menu.querySelector('input');
+                    if (first) first.focus();
+                } else if (restoreFocus && lastOpener
+                           && lastOpener.offsetParent !== null) {
+                    lastOpener.focus();
+                }
             }
 
-            document.getElementById('card-menu-toggle').addEventListener('click', e => {
-                e.preventDefault(); toggleMenu();
+            // role="button" links: Space activates them like a real button
+            function activateOnSpace(el) {
+                el.addEventListener('keydown', e => {
+                    if (e.key === ' ') { e.preventDefault(); el.click(); }
+                });
+            }
+            const menuToggle = document.getElementById('card-menu-toggle');
+            const kioskToggle = document.getElementById('kiosk-toggle');
+            const kioskCardsBtn = document.getElementById('kiosk-cards-btn');
+            activateOnSpace(menuToggle);
+            activateOnSpace(kioskToggle);
+
+            menuToggle.addEventListener('click', e => {
+                e.preventDefault(); toggleMenu(undefined, menuToggle);
             });
-            document.getElementById('kiosk-toggle').addEventListener('click', e => {
-                e.preventDefault(); toggleMenu(false); setKiosk(true);
+            kioskToggle.addEventListener('click', e => {
+                e.preventDefault(); toggleMenu(false, null, false); setKiosk(true);
             });
-            document.getElementById('kiosk-cards-btn').addEventListener('click', () => toggleMenu());
+            kioskCardsBtn.addEventListener('click', () => toggleMenu(undefined, kioskCardsBtn));
             document.getElementById('kiosk-exit-btn').addEventListener('click', () => {
-                toggleMenu(false); setKiosk(false);
+                toggleMenu(false, null, false); setKiosk(false);
             });
             kioskBox.addEventListener('change', () => setKiosk(kioskBox.checked));
             document.getElementById('card-menu-reset').addEventListener('click', () => {
@@ -5185,10 +5235,12 @@
             document.addEventListener('click', e => {
                 if (!menu.hidden && !menu.contains(e.target)
                     && !e.target.closest('#card-menu-toggle, #kiosk-cards-btn')) {
-                    toggleMenu(false);
+                    toggleMenu(false, null, false);
                 }
             });
             document.addEventListener('keydown', e => {
+                // Leave Esc to open dialogs (e.g. the islanding confirmation)
+                if (e.defaultPrevented || document.querySelector('dialog[open]')) return;
                 if (e.key !== 'Escape') return;
                 if (!menu.hidden) toggleMenu(false);
                 else if (kiosk) setKiosk(false);
