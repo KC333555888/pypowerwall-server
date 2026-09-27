@@ -5,8 +5,16 @@
 #   ./upload.sh                 # asks: beta or production
 #   ./upload.sh --prod [-y]     # production: :<version> and :latest
 #   ./upload.sh --beta [N] [-y] # beta: :<version>-betaN (auto-increments N)
-#   --no-cache                  # build without the layer cache
+#   --no-cache                  # full rebuild, ignoring every layer cache
 #   -y                          # don't prompt (for a scripted release)
+#
+# Caching: builds always --pull the base image, so a newer python:3.12-slim
+# (security updates) rebuilds everything on top of it. When neither the base
+# image nor requirements.txt changed, the compiled pip layer is reused - the
+# 32-bit ARM images otherwise compile uvloop, httptools, psutil, cffi and pyyaml
+# from source under emulation (~35-60 min). Production images carry inline cache
+# metadata, and the next production build reads it back from :latest, so the
+# cache survives a pruned local builder without an extra tag on Docker Hub.
 #
 # Production images are built from a clean checkout of the committed HEAD
 # (never the working tree, whose .venv, dist/ and pypowerwall symlink must not
@@ -128,8 +136,20 @@ fi
 
 confirm "Build and push to Docker Hub?"
 
-echo "* BUILD ${IMAGE}:${VER} (using ${DOCKERFILE}${NO_CACHE_FLAG:+, --no-cache})"
-docker buildx build -f "${CONTEXT}/${DOCKERFILE}" ${NO_CACHE_FLAG} --platform "${PLATFORMS}" --push \
+# --no-cache skips reading any cache; production images always carry inline
+# cache metadata, so the release after a --no-cache build is fast again
+CACHE_ARGS=(--pull)
+if [ -n "$NO_CACHE_FLAG" ]; then
+  CACHE_ARGS+=(--no-cache)
+elif [ "$RELEASE_TYPE" == "2" ]; then
+  CACHE_ARGS+=(--cache-from "type=registry,ref=${IMAGE}:latest")
+fi
+if [ "$RELEASE_TYPE" == "2" ]; then
+  CACHE_ARGS+=(--cache-to type=inline)
+fi
+
+echo "* BUILD ${IMAGE}:${VER} (using ${DOCKERFILE}; ${CACHE_ARGS[*]})"
+docker buildx build -f "${CONTEXT}/${DOCKERFILE}" "${CACHE_ARGS[@]}" --platform "${PLATFORMS}" --push \
   "${TAGS[@]}" "${CONTEXT}" \
   || die "docker buildx build failed - nothing was pushed (see the build output above)"
 echo ""
