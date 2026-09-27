@@ -439,6 +439,16 @@
             .chart-wrap canvas {
                 height: 260px;
             }
+            /* Eight range presets: share the row instead of overflowing it */
+            #range-presets {
+                display: flex;
+                width: 100%;
+            }
+            #range-presets button {
+                flex: 1 1 0;
+                min-width: 0;
+                padding: 6px 2px;
+            }
         }
     </style>
 </head>
@@ -461,6 +471,8 @@
             <div class="control-group">
                 <label id="range-label">Range</label>
                 <div class="segmented" id="range-presets" role="group" aria-labelledby="range-label">
+                    <button type="button" data-range="1h">1h</button>
+                    <button type="button" data-range="6h">6h</button>
                     <button type="button" data-range="1d">24h</button>
                     <button type="button" data-range="7d">7 days</button>
                     <button type="button" data-range="30d">30 days</button>
@@ -624,7 +636,11 @@
         // ---------------------------------------------------------------
         // Range handling
         // ---------------------------------------------------------------
-        const PRESET_DAYS = { '1d': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+        const PRESET_DAYS = { '1h': 1, '6h': 1, '1d': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+        // Rolling windows (seconds) for the temperature/fan charts. Energy is
+        // per local day, so 1h/6h show today and 24h shows yesterday + today.
+        const ROLLING = { '1h': 3600, '6h': 6 * 3600, '1d': DAY };
+        const SUBDAY = new Set(['1h', '6h']);
 
         function applyPreset(range) {
             state.range = range;
@@ -673,8 +689,8 @@
         function epochWindow() {
             const now = Date.now() / 1000;
             // Energy is per day, so "24h" shows yesterday and today; device
-            // history can show a true rolling 24 hours
-            if (state.range === '1d') return { start: now - DAY, end: now + 60 };
+            // history can show a true rolling 1, 6 or 24 hours
+            if (state.range in ROLLING) return { start: now - ROLLING[state.range], end: now + 60 };
             let start;
             if (state.from) start = parseDay(state.from).getTime() / 1000;
             else {
@@ -1012,7 +1028,9 @@
             const first = state.from || rows[0].day;
             const last = state.to || rows[rows.length - 1].day;
             const dayCount = Math.round((dayX(last) - dayX(first)) / DAY) + 1;
-            $('energy-note').textContent = `${rows.length} of ${dayCount} days recorded · kWh per local day`;
+            $('energy-note').textContent = SUBDAY.has(state.range)
+                ? 'Today so far · energy is totalled per local day'
+                : `${rows.length} of ${dayCount} days recorded · kWh per local day`;
 
             // Range totals
             const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
@@ -1419,14 +1437,18 @@
             renderDeviceCards();
         }));
 
-        // Refresh while the range includes today
+        // Refresh while the range includes today: every minute for the 1h/6h
+        // views (so new samples show up), every 5 minutes otherwise
+        let lastRefresh = Date.now();
         setInterval(() => {
             if (document.hidden) return;
+            if (Date.now() - lastRefresh < (SUBDAY.has(state.range) ? 60 * 1000 : REFRESH_MS) - 1000) return;
             if (!state.to || state.to >= localDay(new Date())) {
+                lastRefresh = Date.now();
                 if (state.range !== 'custom') applyPreset(state.range);
                 reload(true);
             }
-        }, REFRESH_MS);
+        }, 60 * 1000);
 
         readUrl();
         syncControls();

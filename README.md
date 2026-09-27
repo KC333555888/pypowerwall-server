@@ -345,14 +345,16 @@ If you use `5s` on an SD card or other small disk, consider a shorter
 `PW_TIMESERIES_DEVICE_RETENTION` (e.g. `7d`).
 
 **History page (`/history`).** Look up daily energy for any date range
-(24 hours to all stored history) with range totals, a per-day chart, a
+(1 hour to all stored history) with range totals, a per-day chart, a
 table and CSV download, plus temperature and fan charts with per-unit
 toggles, a °C/°F switch and low/average/high for the range. Ranges up to
 14 days use the raw samples, averaged into about 360 steps per chart
 (never finer than `PW_TIMESERIES_DEVICE_INTERVAL`, with the low/high of
-each step); longer ranges use the daily low/average/high. A 24-hour chart
-shows 4-minute steps; `/api/timeseries/device_trend` with a shorter
-`start`/`end` window returns detail down to the sample interval. The range and gateway are kept in the URL, so a view can
+each step); longer ranges use the daily low/average/high. The **1h** and
+**6h** ranges show the temperature and fan charts in fine detail (a 1h
+chart at `PW_TIMESERIES_DEVICE_INTERVAL=5s` has 10-second steps, versus
+4-minute steps at 24h) and refresh every minute; the energy card shows
+today for those ranges, since energy is totalled per day. The range and gateway are kept in the URL, so a view can
 be bookmarked, e.g. `/history?range=90d`. Under `PROXY_BASE_URL` it is at
 `<base>/history`.
 
