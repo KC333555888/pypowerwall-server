@@ -346,8 +346,10 @@ If you use `5s` on an SD card or other small disk, consider a shorter
 
 **History page (`/history`).** Look up daily energy for any date range
 (1 hour to all stored history) with range totals, a per-day chart, a
-table and CSV download, plus temperature and fan charts with a °C/°F
-switch and low/average/high for the range. With more than one Powerwall,
+table and CSV download. On the **1h / 6h / 24h** ranges the energy card
+instead charts power through the day (solar, home, battery and grid kW,
+from the raw samples kept for `PW_TIMESERIES_RETENTION`). Temperature and
+fan charts have a °C/°F switch and show low/average/high for the range. With more than one Powerwall,
 an **All / PW1 / PW2 …** selector shows one unit at a time (PW1 is the
 unit with the inverter; a Powerwall 3's battery and inverter readings are
 grouped by serial number), or all of them told apart by line style. Ranges up to

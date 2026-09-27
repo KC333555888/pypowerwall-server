@@ -293,6 +293,12 @@
             margin-right: 12px;
         }
 
+        .chart-hint {
+            font-size: 0.75em;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
         /* Line-style key for the Powerwall units when "All" is selected */
         .unit-key {
             display: inline-flex;
@@ -592,6 +598,14 @@
             { key: 'grid_import_kwh', label: 'Grid import', color: '#f85149', total: 'import' },
             { key: 'grid_export_kwh', label: 'Grid export', color: '#db6d28', total: 'export' },
         ];
+        // Intraday power lines (1h / 6h / 24h ranges), from /api/timeseries/trend.
+        // Sign convention: battery + discharging / - charging, grid + import / - export
+        const POWER_SERIES = [
+            { key: 'solar_kw', label: 'Solar', color: '#f0c000' },
+            { key: 'home_kw', label: 'Home', color: '#58a6ff' },
+            { key: 'battery_kw', label: 'Battery', color: '#3fb950' },
+            { key: 'grid_kw', label: 'Grid', color: '#f85149' },
+        ];
         const METRIC_COLORS = {
             pack_temp_max: '#f85149',
             pack_temp_min: '#58a6ff',
@@ -615,6 +629,8 @@
             gateway: '',
             unit: 'C',
             energyOn: new Set(['solar_kwh']),
+            powerOn: new Set(POWER_SERIES.map(s => s.key)),
+            powerTrend: null,
             tempMetricsOff: new Set(),
             fanMode: 'fan_speed',
             unitSel: { temperature: 'all', fan: 'all' },  // 'all' or a unit label ("PW2")
@@ -1074,6 +1090,17 @@
             if (state.from) p.set('start', state.from);
             p.set('end', state.to || localDay(new Date()));
             if (state.gateway) p.set('gateway', state.gateway);
+            // Short ranges also chart power through the day from raw samples
+            state.powerTrend = null;
+            let power = null;
+            if (state.range in ROLLING) {
+                const { start, end } = epochWindow();
+                const tp = new URLSearchParams({ start: String(Math.floor(start)), end: String(Math.ceil(end)) });
+                if (state.gateway) tp.set('gateway', state.gateway);
+                power = getJSON('/api/timeseries/trend?' + tp.toString())
+                    .then(t => Object.assign(t, { window: { start, end } }))
+                    .catch(e => ({ error: e.message }));
+            }
             let data;
             try {
                 data = await getJSON('/api/timeseries/daily?' + p.toString());
@@ -1094,6 +1121,7 @@
                 }
                 return row;
             }).reverse();
+            if (power) state.powerTrend = await power;
             renderEnergy();
         }
 
@@ -1101,6 +1129,13 @@
             const body = $('energy-body');
             const rows = state.energyDays;
             body.replaceChildren();
+            const rolling = state.range in ROLLING;
+            const hasPower = rolling && (state.powerTrend?.points || []).length > 0;
+            if (!rows.length && hasPower) {
+                $('energy-note').textContent = 'No daily totals yet';
+                renderPowerChart(body);
+                return;
+            }
             if (!rows.length) {
                 body.innerHTML = '<div class="empty">No daily energy recorded in this range. Totals start accumulating from the first poll after the server starts; pick a wider range or check back tomorrow.</div>';
                 $('energy-note').textContent = '';
@@ -1139,6 +1174,12 @@
             }
             body.appendChild(totals);
 
+            if (rolling) renderPowerChart(body);
+            else renderDailyBars(body, rows, first, last);
+            renderEnergyTable(body, rows, first, last);
+        }
+
+        function renderDailyBars(body, rows, first, last) {
             // Toggles
             const chips = document.createElement('div');
             chips.className = 'chips';
@@ -1176,7 +1217,70 @@
                 }));
             }
             drawChart(canvas, cfg);
+        }
 
+        function renderPowerChart(body) {
+            const trend = state.powerTrend;
+            const pts = trend?.points || [];
+            if (trend?.error || !pts.length) {
+                const msg = trend?.error
+                    ? `Couldn't load power history: ${esc(trend.error)}`
+                    : 'No power samples in this range yet. They are recorded every poll and kept for PW_TIMESERIES_RETENTION (24 hours by default).';
+                const empty = document.createElement('div');
+                empty.className = 'empty';
+                empty.innerHTML = msg;
+                body.appendChild(empty);
+                return;
+            }
+            const chips = document.createElement('div');
+            chips.className = 'chips';
+            const lab = document.createElement('span');
+            lab.className = 'chip-label';
+            lab.textContent = `Power (kW), ${fmtStep(trend.bucket_seconds || 60)} steps`;
+            chips.appendChild(lab);
+            body.appendChild(chips);
+            const canvas = makeChart(body, false);
+            canvas.setAttribute('aria-label', 'Power through the day chart');
+            const half = (trend.bucket_seconds || 60) / 2;
+            const win = trend.window;
+            const cfg = {
+                xMode: 'time',
+                xMin: win.start,
+                xMax: Math.max(Math.min(win.end, Date.now() / 1000), win.start + 60),
+                gap: trend.bucket_seconds || 60,
+                zeroBased: true,
+                tooltipAll: true,
+                yUnit: 'kW',
+                series: POWER_SERIES.map(s => ({
+                    id: s.key,
+                    label: s.label,
+                    color: s.color,
+                    type: 'line',
+                    visible: state.powerOn.has(s.key),
+                    points: pts.map(p => ({ x: p.ts + half, y: p[s.key] })),
+                })),
+                formatValue: (p, s) => {
+                    const v = `${fmtNum(p.y, 2)} kW`;
+                    if (s.id === 'battery_kw') return p.y > 0.01 ? `${v} discharging` : p.y < -0.01 ? `${fmtNum(-p.y, 2)} kW charging` : v;
+                    if (s.id === 'grid_kw') return p.y > 0.01 ? `${v} import` : p.y < -0.01 ? `${fmtNum(-p.y, 2)} kW export` : v;
+                    return v;
+                },
+            };
+            for (const s of POWER_SERIES) {
+                chips.appendChild(chipButton(s.label, s.color, state.powerOn.has(s.key), on => {
+                    if (on) state.powerOn.add(s.key); else state.powerOn.delete(s.key);
+                    cfg.series.find(x => x.id === s.key).visible = on;
+                    drawChart(canvas, cfg);
+                }, true));
+            }
+            const hint = document.createElement('div');
+            hint.className = 'chart-hint';
+            hint.textContent = 'Battery above zero = discharging, below = charging · Grid above zero = importing, below = exporting';
+            body.appendChild(hint);
+            drawChart(canvas, cfg);
+        }
+
+        function renderEnergyTable(body, rows, first, last) {
             // Table + CSV
             const actions = document.createElement('div');
             actions.className = 'table-actions';
