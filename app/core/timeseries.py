@@ -144,7 +144,19 @@ DEVICE_SIGNALS: Dict[str, str] = {
     "PVAC_Fan_Speed_Actual_RPM": "fan_rpm",
 }
 
-# Metric catalog for API clients: label, unit and chart group.
+# Chart groups, in display order. The History page draws one chart card per
+# group that has data, titled with ``label``; ``zero_based`` starts the
+# y-axis at 0 (speeds and duty cycles) instead of fitting the data (temps).
+# A metric in a group not listed here still gets a card, titled from the
+# group id, so a new group only needs entries here and in DEVICE_METRICS.
+SIGNAL_GROUPS: Dict[str, Dict[str, Any]] = {
+    "temperature": {"label": "Powerwall temperatures", "zero_based": False},
+    "fan_speed": {"label": "Fan speed", "zero_based": True},
+    "fan_duty": {"label": "Fan duty cycle", "zero_based": True},
+}
+
+# Metric catalog for API clients: label, unit and chart group. Order is the
+# display order within a group (the page assigns palette colors by it).
 DEVICE_METRICS: Dict[str, Dict[str, str]] = {
     "pack_temp_max": {
         "label": "Pack temp (max)",
@@ -866,7 +878,12 @@ class TimeSeriesStore:
     ) -> Dict[str, Any]:
         """Recorded device series with their raw and daily coverage."""
         if not self.enabled:
-            return {"enabled": False, "series": [], "metrics": DEVICE_METRICS}
+            return {
+                "enabled": False,
+                "series": [],
+                "metrics": DEVICE_METRICS,
+                "groups": SIGNAL_GROUPS,
+            }
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(), partial(self._get_signal_series_sync, gateway)
@@ -878,6 +895,7 @@ class TimeSeriesStore:
             "signals_enabled": self.signals_enabled,
             "interval_seconds": self._signal_interval,
             "metrics": DEVICE_METRICS,
+            "groups": SIGNAL_GROUPS,
         }
         with self._lock:
             try:

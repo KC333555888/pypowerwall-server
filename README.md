@@ -347,23 +347,28 @@ Disk use for the raw samples, per Powerwall 3 (8 signals):
 table and CSV download. On the **1h / 6h / 24h** ranges the energy card
 instead shows the same **Energy Trend** chart as the console: solar, home,
 battery and grid kW plus battery level % on the right axis, from the raw
-samples kept for `PW_TIMESERIES_RETENTION`. Temperature and
-fan charts have a °C/°F switch and show low/average/high for the range. With more than one Powerwall,
-an **All / PW1 / PW2 …** selector shows one unit at a time (PW1 is the
-unit with the inverter; a Powerwall 3's battery and inverter readings are
-grouped by serial number), or all of them told apart by line style. Ranges up to
-14 days use the raw samples, averaged into about 360 steps per chart
-(never finer than `PW_TIMESERIES_SIGNAL_INTERVAL`, with the low/high of
-each step); longer ranges use the daily low/average/high. The **1h** and
-**6h** ranges show the temperature and fan charts in fine detail (every
-stored sample at 1h, versus 4-minute steps at 24h) and refresh every minute; the energy card shows
-today for those ranges, since energy is totalled per day.
+samples kept for `PW_TIMESERIES_RETENTION`.
 
-The range, gateway, selected Powerwall for each chart and the fan
-speed/duty view are kept in the URL, so a view can be bookmarked, e.g.
-`/history?range=90d` or `/history?range=6h&temp_pw=PW2&fan_pw=PW1&fan=duty`.
-Powerwall numbering is the same on both charts. Under `PROXY_BASE_URL` it
-is at `<base>/history`.
+Below it the page draws **one chart card per signal group** (Powerwall
+temperatures, Fan speed, Fan duty cycle), built entirely from the catalog
+at `/api/timeseries/signals`: a new metric, or a whole new group, appears
+with no page changes. Cards have a °C/°F switch (for °C series), **Show**
+toggles when a group has several metrics, and low/average/high for the
+range. With more than one Powerwall, an **All / PW1 / PW2 …** selector on
+each card shows one unit at a time (PW1 is the unit with the inverter; a
+Powerwall 3's battery and inverter readings are grouped by serial number),
+or all of them told apart by line style. Ranges up to 14 days use the raw
+samples, averaged into about 360 steps per chart (never finer than
+`PW_TIMESERIES_SIGNAL_INTERVAL`, with the low/high of each step); longer
+ranges use the daily low/average/high. The **1h** and **6h** ranges show
+every stored sample and refresh every minute; the energy card shows today
+for those ranges, since energy is totalled per day.
+
+The range, gateway and the Powerwall selected on each card
+(`<group>_pw`) are kept in the URL, so a view can be bookmarked, e.g.
+`/history?range=90d` or `/history?range=6h&temperature_pw=PW2`. Powerwall
+numbering is the same on every card. Under `PROXY_BASE_URL` it is at
+`<base>/history`.
 
 ### Configuration File (gateways.yaml)
 

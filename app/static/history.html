@@ -646,25 +646,15 @@
             </div>
         </section>
 
-        <section class="card" aria-labelledby="temp-title">
-            <div class="card-header">
-                <h2 class="card-title" id="temp-title">Powerwall temperatures</h2>
-                <div class="card-note" id="temp-note"></div>
-            </div>
-            <div id="temp-body">
-                <div class="empty">Loading temperature history…</div>
-            </div>
-        </section>
-
-        <section class="card" aria-labelledby="fan-title">
-            <div class="card-header">
-                <h2 class="card-title" id="fan-title">Powerwall fans</h2>
-                <div class="card-note" id="fan-note"></div>
-            </div>
-            <div id="fan-body">
-                <div class="empty">Loading fan history…</div>
-            </div>
-        </section>
+        <!-- One chart card per signal group, built from /api/timeseries/signals -->
+        <div id="signal-cards">
+            <section class="card" aria-labelledby="signals-title">
+                <div class="card-header">
+                    <h2 class="card-title" id="signals-title">Powerwall temperatures and fans</h2>
+                </div>
+                <div class="empty">Loading history…</div>
+            </section>
+        </div>
     </div>
 
     <script>
@@ -680,18 +670,9 @@
             { key: 'grid_import_kwh', label: 'Grid import', color: '#f85149', total: 'import' },
             { key: 'grid_export_kwh', label: 'Grid export', color: '#db6d28', total: 'export' },
         ];
-        const METRIC_COLORS = {
-            pack_temp_max: '#f85149',
-            pack_temp_min: '#58a6ff',
-            shunt_temp: '#d29922',
-            inverter_ambient: '#a371f7',
-            ambient_temp: '#3fb950',
-            fan_a_rpm: '#58a6ff',
-            fan_b_rpm: '#3fb950',
-            fan_rpm: '#58a6ff',
-            fan_a_duty: '#d29922',
-            fan_b_duty: '#db6d28',
-        };
+        // Signal colors come from this palette in catalog order within each
+        // group, so a new metric needs no page change
+        const SIGNAL_PALETTE = ['#f85149', '#58a6ff', '#d29922', '#a371f7', '#3fb950', '#db6d28', '#39c5cf', '#f778ba'];
         const DEVICE_DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3]];
         const UNIT_KEY = 'pw_history_temp_unit';
         const REFRESH_MS = 5 * 60 * 1000;
@@ -705,9 +686,8 @@
             energyOn: new Set(['solar_kwh']),
             trendHidden: new Set(),  // Energy Trend series switched off in the legend
             powerTrend: null,
-            tempMetricsOff: new Set(),
-            fanMode: 'fan_speed',
-            unitSel: { temperature: 'all', fan: 'all' },  // 'all' or a unit label ("PW2")
+            metricsOff: new Set(),  // metrics switched off with the Show chips
+            unitSel: {},  // signal group -> 'all' or a unit label ("PW2")
             gatewayNames: {},
             devicesInfo: null,
             deviceTrend: null,
@@ -831,9 +811,10 @@
             if (state.range !== 'custom') p.set('range', state.range);
             else { if (state.from) p.set('from', state.from); if (state.to) p.set('to', state.to); }
             if (state.gateway) p.set('gateway', state.gateway);
-            if (state.unitSel.temperature !== 'all') p.set('temp_pw', state.unitSel.temperature);
-            if (state.unitSel.fan !== 'all') p.set('fan_pw', state.unitSel.fan);
-            if (state.fanMode === 'fan_duty') p.set('fan', 'duty');
+            // Selected Powerwall per chart card: <group>_pw=PW2
+            for (const [group, unit] of Object.entries(state.unitSel)) {
+                if (unit && unit !== 'all') p.set(`${group}_pw`, unit);
+            }
             const q = p.toString();
             history.replaceState(null, '', location.pathname + (q ? '?' + q : ''));
         }
@@ -850,8 +831,10 @@
                 applyPreset(range && (range in PRESET_DAYS || range === 'all') ? range : '30d');
             }
             state.gateway = p.get('gateway') || '';
-            state.unitSel = { temperature: p.get('temp_pw') || 'all', fan: p.get('fan_pw') || 'all' };
-            state.fanMode = p.get('fan') === 'duty' ? 'fan_duty' : 'fan_speed';
+            state.unitSel = {};
+            for (const [key, value] of p) {
+                if (key.endsWith('_pw') && value) state.unitSel[key.slice(0, -3)] = value;
+            }
             const unit = storageGet(UNIT_KEY);
             state.unit = unit === 'F' ? 'F' : 'C';
         }
@@ -1436,39 +1419,79 @@
             renderDeviceCards();
         }
 
-        function deviceEmpty(kind) {
+        function signalsEmpty() {
             const info = state.devicesInfo || {};
-            if (info.error) return `Couldn't load ${kind} history: ${esc(info.error)}`;
+            if (info.error) return `Couldn't load temperature and fan history: ${esc(info.error)}`;
             if (info.enabled === false) return 'Time-series storage is turned off. Remove <code>PW_TIMESERIES_RETENTION=-1</code> to record history.';
-            if (info.signals_enabled === false) return `${kind[0].toUpperCase() + kind.slice(1)} recording is turned off. Remove <code>PW_TIMESERIES_SIGNAL_RETENTION=-1</code> to record it.`;
-            if (kind === 'temperature') {
-                return 'No temperature history yet. Powerwall 3 temperatures need a TEDAPI connection (Wi-Fi or wired v1r); recording starts with the first poll.';
-            }
-            return 'No fan history yet. Fan readings need a TEDAPI connection; recording starts with the first poll.';
+            if (info.signals_enabled === false) return 'Temperature and fan recording is turned off. Remove <code>PW_TIMESERIES_SIGNAL_RETENTION=-1</code> to record it.';
+            return 'No temperature or fan history yet. These readings need a TEDAPI connection (Wi-Fi or wired v1r; Powerwall 3 temperatures need pypowerwall 0.17.4 or later); recording starts with the first poll.';
         }
 
+        // Catalog lookups (from /api/timeseries/signals)
+        function groupOf(metric) {
+            return ((state.devicesInfo || {}).metrics || {})[metric]?.group || 'other';
+        }
+        function groupInfo(group) {
+            const info = ((state.devicesInfo || {}).groups || {})[group];
+            if (info) return info;
+            // A group the catalog doesn't describe still gets a card
+            const words = group.replace(/_/g, ' ');
+            return { label: words.charAt(0).toUpperCase() + words.slice(1), zero_based: false };
+        }
+        function metricColor(metric) {
+            const metrics = (state.devicesInfo || {}).metrics || {};
+            const group = groupOf(metric);
+            const idx = Object.keys(metrics).filter(m => metrics[m].group === group).indexOf(metric);
+            return SIGNAL_PALETTE[Math.max(0, idx) % SIGNAL_PALETTE.length];
+        }
+
+        function makeCard(container, id, title) {
+            const section = document.createElement('section');
+            section.className = 'card';
+            section.setAttribute('aria-labelledby', `${id}-title`);
+            const header = document.createElement('div');
+            header.className = 'card-header';
+            const h2 = document.createElement('h2');
+            h2.className = 'card-title';
+            h2.id = `${id}-title`;
+            h2.textContent = title;
+            const note = document.createElement('div');
+            note.className = 'card-note';
+            header.append(h2, note);
+            const body = document.createElement('div');
+            section.append(header, body);
+            container.appendChild(section);
+            return { body, note };
+        }
+
+        // One card per signal group with data, in catalog order
         function renderDeviceCards() {
-            renderDeviceCard('temperature', $('temp-body'), $('temp-note'), ['temperature']);
-            renderDeviceCard('fan', $('fan-body'), $('fan-note'), [state.fanMode]);
+            const wrap = $('signal-cards');
+            wrap.replaceChildren();
+            const trend = state.deviceTrend;
+            const series = (trend && !trend.error && trend.series) || [];
+            const order = Object.keys((state.devicesInfo || {}).groups || {});
+            const rank = g => (order.includes(g) ? order.indexOf(g) : order.length);
+            const groups = Array.from(new Set(series.map(s => groupOf(s.metric))))
+                .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+            if (!groups.length) {
+                const { body } = makeCard(wrap, 'signals', 'Powerwall temperatures and fans');
+                body.innerHTML = `<div class="empty">${trend && trend.error ? `Couldn't load temperature and fan history: ${esc(trend.error)}` : signalsEmpty()}</div>`;
+                return;
+            }
+            for (const group of groups) {
+                const { body, note } = makeCard(wrap, `signal-${group}`, groupInfo(group).label);
+                renderDeviceCard(group, body, note);
+            }
         }
 
-        function renderDeviceCard(kind, body, note, groups) {
+        function renderDeviceCard(group, body, note) {
             body.replaceChildren();
             note.textContent = '';
             const trend = state.deviceTrend;
             const metricsInfo = (state.devicesInfo || {}).metrics || {};
-            const allGroups = kind === 'fan' ? ['fan_speed', 'fan_duty'] : ['temperature'];
-            const inKind = s => allGroups.includes(metricsInfo[s.metric]?.group);
-
-            if (!trend || trend.error) {
-                body.innerHTML = `<div class="empty">${trend && trend.error ? `Couldn't load ${kind} history: ${esc(trend.error)}` : deviceEmpty(kind)}</div>`;
-                return;
-            }
-            const kindSeries = (trend.series || []).filter(inKind);
-            if (!kindSeries.length) {
-                body.innerHTML = `<div class="empty">${deviceEmpty(kind)}</div>`;
-                return;
-            }
+            const info = groupInfo(group);
+            const inGroup = (trend.series || []).filter(s => groupOf(s.metric) === group);
             const daily = trend.resolution === 'daily';
             const retention = (state.devicesInfo || {}).retentionText;
             note.textContent = daily
@@ -1479,23 +1502,6 @@
             controls.className = 'chips';
             body.appendChild(controls);
 
-            if (kind === 'fan') {
-                const seg = document.createElement('div');
-                seg.className = 'segmented';
-                seg.setAttribute('role', 'group');
-                seg.setAttribute('aria-label', 'Fan measurement');
-                for (const [g, label] of [['fan_speed', 'Speed (rpm)'], ['fan_duty', 'Duty cycle (%)']]) {
-                    const b = document.createElement('button');
-                    b.type = 'button';
-                    b.textContent = label;
-                    b.setAttribute('aria-pressed', String(state.fanMode === g));
-                    b.addEventListener('click', () => { state.fanMode = g; writeUrl(); renderDeviceCards(); });
-                    seg.appendChild(b);
-                }
-                controls.appendChild(seg);
-            }
-
-            const inGroup = kindSeries.filter(s => groups.includes(metricsInfo[s.metric]?.group));
             // Powerwall selector: All, or one unit at a time (less clutter).
             // Numbered across every device series so PW2 is the same unit on
             // both cards; only units with data for this card get a button.
@@ -1503,7 +1509,7 @@
             const units = powerwallUnits(trend.series || []).filter(u => inCard.has(u.key));
             // The selection (from the URL or a click) is kept even when this
             // range has no data for it, so a bookmark survives an empty range
-            const selUnit = units.find(u => u.label === state.unitSel[kind]);
+            const selUnit = units.find(u => u.label === state.unitSel[group]);
             const sel = selUnit ? selUnit.key : 'all';
             const unitIdx = new Map(units.map((u, i) => [u.key, i]));
             const showUnitSuffix = sel === 'all' && units.length > 1;
@@ -1521,7 +1527,7 @@
                     b.textContent = u.label;
                     b.title = u.title;
                     b.setAttribute('aria-pressed', String(sel === u.key));
-                    b.addEventListener('click', () => { state.unitSel[kind] = value; writeUrl(); renderDeviceCards(); });
+                    b.addEventListener('click', () => { state.unitSel[group] = value; writeUrl(); renderDeviceCards(); });
                     seg.appendChild(b);
                 }
                 controls.appendChild(seg);
@@ -1530,14 +1536,14 @@
             let chartCanvas = null;
             let cfg = null;
 
-            if (kind === 'temperature' && metrics.length > 1) {
+            if (metrics.length > 1) {
                 const lab = document.createElement('span');
                 lab.className = 'chip-label';
                 lab.textContent = 'Show';
                 controls.appendChild(lab);
                 for (const m of metrics) {
-                    controls.appendChild(chipButton(metricsInfo[m]?.label || m, METRIC_COLORS[m] || '#8b949e', !state.tempMetricsOff.has(m), on => {
-                        if (on) state.tempMetricsOff.delete(m); else state.tempMetricsOff.add(m);
+                    controls.appendChild(chipButton(metricsInfo[m]?.label || m, metricColor(m), !state.metricsOff.has(m), on => {
+                        if (on) state.metricsOff.delete(m); else state.metricsOff.add(m);
                         updateVisibility();
                     }, true));
                 }
@@ -1574,11 +1580,11 @@
                     metric: s.metric,
                     deviceKey: key,
                     label,
-                    color: METRIC_COLORS[s.metric] || '#8b949e',
+                    color: metricColor(s.metric),
                     dash: showUnitSuffix ? DEVICE_DASHES[uIdx % DEVICE_DASHES.length] : [],
                     type: 'line',
                     band: daily,
-                    visible: !state.tempMetricsOff.has(s.metric),
+                    visible: !state.metricsOff.has(s.metric),
                     unit: s.unit,
                     points: s.points.map(p => ({
                         x: daily ? dayX(p.day) : p.ts + (trend.bucket_seconds || 60) / 2,
@@ -1603,7 +1609,7 @@
                 xMin,
                 xMax: Math.max(xMax, xMin + 60),
                 gap: daily ? DAY : (trend.bucket_seconds || 60),
-                zeroBased: kind === 'fan',
+                zeroBased: !!info.zero_based,
                 yUnit: unit,
                 series,
                 formatValue: p => daily
@@ -1611,7 +1617,7 @@
                     : `${fmtNum(p.y, dp)} ${unit}`,
             };
             chartCanvas = makeChart(body, true);
-            chartCanvas.setAttribute('aria-label', kind === 'fan' ? 'Fan history chart' : 'Temperature history chart');
+            chartCanvas.setAttribute('aria-label', `${info.label} chart`);
             drawChart(chartCanvas, cfg);
 
             // Min / avg / max over the range
@@ -1645,7 +1651,7 @@
                 statsWrap.innerHTML = any ? html + '</tbody></table>' : '';
             }
             function updateVisibility() {
-                for (const s of series) s.visible = !state.tempMetricsOff.has(s.metric);
+                for (const s of series) s.visible = !state.metricsOff.has(s.metric);
                 drawChart(chartCanvas, cfg);
                 renderStats();
             }
@@ -1716,7 +1722,7 @@
         $('to-date').addEventListener('change', onDateChange);
         $('gateway-select').addEventListener('change', e => {
             state.gateway = e.target.value;
-            state.unitSel = { temperature: 'all', fan: 'all' };
+            state.unitSel = {};
             reload(true);
         });
         document.querySelectorAll('#temp-unit button').forEach(b => b.addEventListener('click', () => {

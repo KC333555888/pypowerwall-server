@@ -18,6 +18,7 @@ import pytest
 
 from app.core.timeseries import (
     DEVICE_METRICS,
+    SIGNAL_GROUPS,
     DEVICE_SIGNALS,
     TimeSeriesStore,
     extract_device_metrics,
@@ -101,6 +102,7 @@ class TestExtract:
     def test_every_signal_has_catalog_entry(self):
         for metric in DEVICE_SIGNALS.values():
             assert metric in DEVICE_METRICS
+            assert DEVICE_METRICS[metric]["group"] in SIGNAL_GROUPS
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +490,8 @@ class TestHistoryAPI:
         assert body["signals_enabled"] is True
         assert body["series"] == []
         assert "pack_temp_max" in body["metrics"]
+        assert list(body["groups"]) == ["temperature", "fan_speed", "fan_duty"]
+        assert body["groups"]["fan_speed"]["zero_based"] is True
 
     def test_signal_trend_endpoint(self, client):
         resp = client.get(
@@ -518,6 +522,15 @@ class TestHistoryAPI:
         assert "text/html" in resp.headers["content-type"]
         assert "{PROXY_BASE" not in resp.text
         assert "/api/timeseries/signal_trend" in resp.text
+
+    def test_history_page_is_catalog_driven(self, client):
+        # Cards come from /api/timeseries/signals; the page must not name
+        # individual metrics or groups (a new one should need no page change)
+        page = client.get("/history").text
+        for name in DEVICE_METRICS:
+            assert name not in page, name
+        for group in SIGNAL_GROUPS:  # as a code identifier, not prose
+            assert f"'{group}'" not in page and f'"{group}"' not in page, group
 
     def test_energy_trend_script_shared(self, client):
         # Console and History load one shared Energy Trend chart file
