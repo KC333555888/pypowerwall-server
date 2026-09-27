@@ -9,6 +9,9 @@
 - **Powerwall temperature and fan history** — the time-series store now records each Powerwall's battery pack max/min, shunt and inverter ambient temperatures (Powerwall 2 ambient too) and inverter fan speed (rpm) and duty cycle (%) once a minute by default, from data each poll already fetches. Signals are stored as generic per-device series, so adding one needs no schema change, with a daily low/average/high kept long-term. New settings `PW_TIMESERIES_DEVICE_RETENTION` (default `30d`; `-1` stops recording) and `PW_TIMESERIES_DEVICE_INTERVAL` (default `60s`; `30s` or `5s` for finer detail at more disk use). The History page charts them with a Powerwall selector (All / PW1 / PW2 …, one unit at a time to cut clutter), 1h/6h ranges for fine detail (steps down to the sample interval), a °C/°F switch and low/average/high for the range. `PCH_heatsinkTemp` is not recorded since it reads a constant on current firmware.
 - **Time-series API** — `GET /api/timeseries/daily` accepts `start`/`end` (`YYYY-MM-DD`) for any range of days; new `GET /api/timeseries/devices` and `GET /api/timeseries/device_trend`; `/api/timeseries/status` reports device sample counts and settings.
 
+**Fixed:**
+- **Console Energy Trend: overlapping axis labels** — when battery or grid power goes negative, the kW label nearest the zero line no longer prints on top of the "0" label.
+
 ### [0.7.0] - 2026-09-26
 
 **Added:**

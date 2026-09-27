@@ -1407,7 +1407,8 @@
                     ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
                     ctx.fillStyle = 'rgba(139, 148, 158, 0.8)';
                     ctx.textAlign = 'right';
-                    ctx.fillText(kw.toFixed(1), PAD.l - 6, y);
+                    // Skip a label that would collide with the "0" zero-line label
+                    if (!(minKw < 0 && Math.abs(y - Y(0)) < 12)) ctx.fillText(kw.toFixed(1), PAD.l - 6, y);
                     ctx.textAlign = 'left';
                     ctx.fillText(`${Math.round(i * 25)}%`, W - PAD.r + 6, y);
                 }
