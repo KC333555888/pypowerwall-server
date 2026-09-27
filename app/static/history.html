@@ -289,6 +289,29 @@
             margin-right: 4px;
         }
 
+        .unit-select {
+            margin-right: 12px;
+        }
+
+        /* Line-style key for the Powerwall units when "All" is selected */
+        .unit-key {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 4px 12px;
+        }
+
+        .unit-key > span {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .unit-key .swatch {
+            display: inline-block;
+            width: 18px;
+            height: 3px;
+        }
+
         /* Charts */
         .chart-wrap {
             position: relative;
@@ -594,7 +617,7 @@
             energyOn: new Set(['solar_kwh']),
             tempMetricsOff: new Set(),
             fanMode: 'fan_speed',
-            devicesOff: new Set(),
+            unitSel: { temperature: 'all', fan: 'all' },  // 'all' or a unit key
             gatewayNames: {},
             devicesInfo: null,
             deviceTrend: null,
@@ -642,6 +665,36 @@
             const parts = String(device).split('--');
             const kind = { TEPOD: 'Battery', TEPINV: 'Inverter', TETHC: 'Powerwall', PVAC: 'Inverter' }[parts[0]] || parts[0];
             return parts.length > 1 ? `${kind} ${parts[parts.length - 1]}` : String(device);
+        }
+
+        // Group device blocks into physical Powerwalls. pypowerwall names a
+        // Powerwall 3's battery (TEPOD) and inverter (TEPINV) blocks with
+        // the same DIN, so the serial (last "--" part) identifies the unit.
+        const INVERTER_BLOCKS = new Set(['TEPINV', 'PVAC']);
+        function unitKeyOf(gateway, device) {
+            const parts = String(device).split('--');
+            return `${gateway}|${parts[parts.length - 1]}`;
+        }
+        function powerwallUnits(seriesList) {
+            const byKey = new Map();
+            for (const s of seriesList) {
+                const key = unitKeyOf(s.gateway, s.device);
+                if (!byKey.has(key)) byKey.set(key, { key, gateway: s.gateway, devices: new Set(), inverter: false });
+                const u = byKey.get(key);
+                u.devices.add(s.device);
+                if (INVERTER_BLOCKS.has(String(s.device).split('--')[0])) u.inverter = true;
+            }
+            // Per gateway: units with an inverter (the leader) first, then by serial
+            const units = Array.from(byKey.values()).sort((a, b) =>
+                a.gateway.localeCompare(b.gateway) || (b.inverter - a.inverter) || a.key.localeCompare(b.key));
+            const multiGw = new Set(units.map(u => u.gateway)).size > 1;
+            const count = {};
+            for (const u of units) {
+                count[u.gateway] = (count[u.gateway] || 0) + 1;
+                u.label = (multiGw ? `${state.gatewayNames[u.gateway] || u.gateway} ` : '') + `PW${count[u.gateway]}`;
+                u.title = Array.from(u.devices).map(deviceShort).join(', ');
+            }
+            return units;
         }
 
         function toUnit(v, unit) {
@@ -1255,10 +1308,31 @@
                 controls.appendChild(seg);
             }
 
-            const shown = kindSeries.filter(s => groups.includes(metricsInfo[s.metric]?.group));
+            const inGroup = kindSeries.filter(s => groups.includes(metricsInfo[s.metric]?.group));
+            // Powerwall selector: All, or one unit at a time (less clutter)
+            const units = powerwallUnits(inGroup);
+            let sel = state.unitSel[kind];
+            if (sel !== 'all' && !units.some(u => u.key === sel)) sel = state.unitSel[kind] = 'all';
+            const unitIdx = new Map(units.map((u, i) => [u.key, i]));
+            const showUnitSuffix = sel === 'all' && units.length > 1;
+            const shown = sel === 'all' ? inGroup : inGroup.filter(s => unitKeyOf(s.gateway, s.device) === sel);
             const metrics = Array.from(new Set(shown.map(s => s.metric)));
-            const devices = Array.from(new Set(shown.map(s => `${s.gateway}|${s.device}`)));
-            const gateways = new Set(shown.map(s => s.gateway));
+            if (units.length > 1) {
+                const seg = document.createElement('div');
+                seg.className = 'segmented unit-select';
+                seg.setAttribute('role', 'group');
+                seg.setAttribute('aria-label', 'Powerwall');
+                for (const u of [{ key: 'all', label: 'All', title: 'All Powerwalls' }, ...units]) {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = u.label;
+                    b.title = u.title;
+                    b.setAttribute('aria-pressed', String(sel === u.key));
+                    b.addEventListener('click', () => { state.unitSel[kind] = u.key; renderDeviceCards(); });
+                    seg.appendChild(b);
+                }
+                controls.appendChild(seg);
+            }
 
             let chartCanvas = null;
             let cfg = null;
@@ -1275,25 +1349,23 @@
                     }, true));
                 }
             }
-            if (devices.length > 1) {
-                const lab = document.createElement('span');
-                lab.className = 'chip-label';
-                lab.textContent = kind === 'fan' ? 'Inverters' : 'Units';
-                controls.appendChild(lab);
-                devices.forEach((key, i) => {
-                    const [gw, dev] = key.split('|');
-                    const name = deviceShort(dev) + (gateways.size > 1 ? ` (${state.gatewayNames[gw] || gw})` : '');
-                    const b = chipButton(name, '#8b949e', !state.devicesOff.has(key), on => {
-                        if (on) state.devicesOff.delete(key); else state.devicesOff.add(key);
-                        updateVisibility();
-                    }, true);
-                    const sw = b.querySelector('.swatch');
+            if (showUnitSuffix) {
+                // Line style tells the units apart when all are shown
+                const key = document.createElement('span');
+                key.className = 'chip-label unit-key';
+                units.forEach((u, i) => {
+                    const item = document.createElement('span');
+                    const sw = document.createElement('span');
+                    sw.className = 'swatch line';
                     const dash = DEVICE_DASHES[i % DEVICE_DASHES.length];
+                    sw.style.setProperty('--swatch', '#8b949e');
                     sw.style.background = dash.length
                         ? `repeating-linear-gradient(90deg, #8b949e 0 ${dash[0] / 2}px, transparent ${dash[0] / 2}px ${(dash[0] + dash[1]) / 2}px)`
                         : '#8b949e';
-                    controls.appendChild(b);
+                    item.append(sw, document.createTextNode(u.label));
+                    key.appendChild(item);
                 });
+                controls.appendChild(key);
             }
 
             const unit = unitLabel(shown[0]?.unit || '');
@@ -1301,19 +1373,19 @@
             const win = trend.window;
             const series = shown.map(s => {
                 const key = `${s.gateway}|${s.device}`;
-                const devIdx = devices.indexOf(key);
-                const label = (metrics.length > 1 || kind === 'fan' ? s.label : '') +
-                    (devices.length > 1 ? `${metrics.length > 1 || kind === 'fan' ? ' · ' : ''}${deviceShort(s.device)}` : '') || s.label;
+                const uKey = unitKeyOf(s.gateway, s.device);
+                const uIdx = unitIdx.get(uKey) || 0;
+                const label = s.label + (showUnitSuffix ? ` · ${units[uIdx].label}` : '');
                 return {
                     id: `${key}|${s.metric}`,
                     metric: s.metric,
                     deviceKey: key,
                     label,
                     color: METRIC_COLORS[s.metric] || '#8b949e',
-                    dash: DEVICE_DASHES[devIdx % DEVICE_DASHES.length],
+                    dash: showUnitSuffix ? DEVICE_DASHES[uIdx % DEVICE_DASHES.length] : [],
                     type: 'line',
                     band: daily,
-                    visible: !state.tempMetricsOff.has(s.metric) && !state.devicesOff.has(key),
+                    visible: !state.tempMetricsOff.has(s.metric),
                     unit: s.unit,
                     points: s.points.map(p => ({
                         x: daily ? dayX(p.day) : p.ts + (trend.bucket_seconds || 60) / 2,
@@ -1380,7 +1452,7 @@
                 statsWrap.innerHTML = any ? html + '</tbody></table>' : '';
             }
             function updateVisibility() {
-                for (const s of series) s.visible = !state.tempMetricsOff.has(s.metric) && !state.devicesOff.has(s.deviceKey);
+                for (const s of series) s.visible = !state.tempMetricsOff.has(s.metric);
                 drawChart(chartCanvas, cfg);
                 renderStats();
             }
@@ -1451,7 +1523,7 @@
         $('to-date').addEventListener('change', onDateChange);
         $('gateway-select').addEventListener('change', e => {
             state.gateway = e.target.value;
-            state.devicesOff.clear();
+            state.unitSel = { temperature: 'all', fan: 'all' };
             reload(true);
         });
         document.querySelectorAll('#temp-unit button').forEach(b => b.addEventListener('click', () => {
