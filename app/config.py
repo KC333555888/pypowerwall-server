@@ -92,7 +92,7 @@ Environment Variables (Proxy Compatible):
                                         not record device signals). Daily min/avg/max
                                         rollups follow PW_TIMESERIES_DAILY_RETENTION.
         PW_TIMESERIES_DEVICE_INTERVAL - Seconds between temperature/fan samples per
-                                        gateway (default: "60s")
+                                        gateway (default: "5s", matching the poll cycle)
         PW_TIMESERIES_PATH            - SQLite database path (default: /data/timeseries.db
                                         when /data exists, else data/timeseries.db).
                                         If pointed at a directory instead of a file,
@@ -350,7 +350,7 @@ class Settings(BaseSettings):
         default="30d", alias="PW_TIMESERIES_DEVICE_RETENTION"
     )  # Temperature/fan sample retention; "-1" = don't record, "0" = unlimited
     timeseries_device_interval: str = Field(
-        default="60s", alias="PW_TIMESERIES_DEVICE_INTERVAL"
+        default="5s", alias="PW_TIMESERIES_DEVICE_INTERVAL"
     )  # Minimum seconds between temperature/fan samples per gateway
     timeseries_path: Optional[str] = Field(
         default=None, alias="PW_TIMESERIES_PATH"
