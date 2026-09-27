@@ -591,9 +591,14 @@
             const d = parseDay(s);
             return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
         }
-        function fmtTimeLong(ts) {
+        function fmtTimeLong(ts, withSeconds) {
             const d = new Date(ts * 1000);
-            return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            const secs = withSeconds ? `:${pad(d.getSeconds())}` : '';
+            return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}${secs}`;
+        }
+        // Chart step label: "5-second", "30-second", "4-minute"
+        function fmtStep(sec) {
+            return sec < 60 || sec % 60 ? `${Math.round(sec)}-second` : `${Math.round(sec / 60)}-minute`;
         }
         function fmtNum(v, dp) { return v == null || !isFinite(v) ? '--' : v.toFixed(dp); }
 
@@ -1187,7 +1192,7 @@
             const retention = (state.devicesInfo || {}).retentionText;
             note.textContent = daily
                 ? `One point per day: daily average, hover for the day's low–high${retention ? ` · detailed samples kept ${retention}` : ''}`
-                : `Averaged over ${Math.round((trend.bucket_seconds || 60) / 60)}-minute steps`;
+                : `Averaged over ${fmtStep(trend.bucket_seconds || 60)} steps`;
 
             const controls = document.createElement('div');
             controls.className = 'chips';
@@ -1323,7 +1328,7 @@
                         if (h > hi) { hi = h; hiX = p.x; }
                         total += p.y;
                     }
-                    const when = x => daily ? xDay(x) : fmtTimeLong(x - (trend.bucket_seconds || 60) / 2);
+                    const when = x => daily ? xDay(x) : fmtTimeLong(x - (trend.bucket_seconds || 60) / 2, (trend.bucket_seconds || 60) < 60);
                     html += `<tr><td><span class="dot" style="background:${s.color}"></span>${esc(s.label || s.metric)}</td>` +
                         `<td title="${esc(when(loX))}">${fmtNum(lo, dp)} ${esc(unit)}</td>` +
                         `<td>${fmtNum(total / pts.length, dp)} ${esc(unit)}</td>` +

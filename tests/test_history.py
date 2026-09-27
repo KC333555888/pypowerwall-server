@@ -225,6 +225,29 @@ class TestDeviceTrend:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "interval,window,expected",
+        [
+            ("5s", 1800, 5.0),  # short window: one point per sample
+            ("5s", 3600, 10.0),  # ~360 points, multiple of the interval
+            ("30s", 3600, 30.0),  # never finer than the interval
+            ("60s", 3600, 60.0),
+            ("5s", 86400, 240.0),  # a minute or more: whole minutes
+            ("60s", 86400, 240.0),
+        ],
+    )
+    async def test_raw_bucket_follows_interval(
+        self, tmp_path, interval, window, expected
+    ):
+        store = store_for(tmp_path, device_interval=interval)
+        now = time.time()
+        await self._seed(store, now - 600, 5)
+        body = await store.get_device_trend(
+            metrics=["pack_temp_max"], start=now - window, end=now, resolution="raw"
+        )
+        assert body["bucket_seconds"] == expected
+
+    @pytest.mark.asyncio
     async def test_raw_buckets_and_filter(self, tmp_path):
         store = store_for(tmp_path, device_interval="60s")
         now = time.time()

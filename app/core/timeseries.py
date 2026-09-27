@@ -991,10 +991,13 @@ class TimeSeriesStore:
                     )
                 points: Dict[int, List[Dict[str, Any]]] = {i: [] for i in ids}
                 if resolution == "raw":
-                    bucket = max(
-                        float(self._device_interval),
-                        max(60.0, round(span / 360.0 / 60.0) * 60.0),
-                    )
+                    # ~360 points per window, never finer than the sample
+                    # interval; steps of a minute or more snap to whole
+                    # minutes, shorter ones to multiples of the interval.
+                    interval = float(self._device_interval)
+                    target = span / 360.0
+                    unit = 60.0 if target >= 60.0 else interval
+                    bucket = max(interval, round(target / unit) * unit)
                     rows = conn.execute(
                         "SELECT series_id, "
                         "CAST(ts / ? AS INTEGER) * ? AS bstart, "
