@@ -474,6 +474,34 @@ The default budget (1000 requests / 60s per IP) is set well above a normal dashb
 - **Reverse proxies:** if pypowerwall-server sits behind a reverse proxy (see above), every client shares the proxy's IP address, so one rate-limit bucket applies collectively to *all* users behind that proxy. Size the limit accordingly, or rely on the proxy's own per-client rate limiting instead.
 - **Internet-exposed deployments:** this server is designed to be bound to a LAN interface (`PW_BIND_ADDRESS`) behind your firewall — that's the default and recommended setup. If you do expose it to the internet, pair `PW_CONTROL_SECRET` (control endpoint auth) with rate limiting at a real reverse proxy (nginx `limit_req`, Traefik, Caddy) in front of pypowerwall-server. This in-process limiter runs after a connection is already accepted, so it does not protect against connection-level resource exhaustion.
 
+## Console
+
+The management console is at `/console` (the Power Flow animation is at `/`).
+
+### Card Visibility and Kiosk Mode
+
+Use **Cards** in the console header to show or hide individual cards; the remaining cards in a row widen to fill the space. **Kiosk** hides the header and status banner for a wall display or tablet. The status banner reappears if the server loses its gateway connection, so stale data is never shown without a warning. In kiosk mode, faint **Cards** and **Exit kiosk** buttons sit in the top-right corner (hover, tap or tab to them), and Esc exits. These choices are saved in the browser.
+
+A kiosk browser can be configured by URL instead. URL parameters override the saved choices and are not saved:
+
+```
+http://<server>:8675/console?kiosk=1&hide=alerts,gateways,mqtt
+```
+
+| Parameter | Effect |
+|---|---|
+| `kiosk=1` | Start in kiosk mode (`kiosk=0` forces it off) |
+| `hide=<ids>` | Comma-separated cards to hide: `power-flow`, `energy`, `alerts`, `strings`, `health`, `control`, `powerwall`, `gateways`, `mqtt`, `daily-energy` |
+
+With `PROXY_BASE_URL` set, include the prefix, e.g. `https://lab.lan/pypowerwall/console?kiosk=1&hide=gateways` (see [Reverse Proxy / HTTPS Proxy](#reverse-proxy--https-proxy)).
+
+For a Raspberry Pi display:
+
+```bash
+chromium-browser --kiosk --noerrdialogs --disable-infobars \
+  "http://localhost:8675/console?kiosk=1&hide=gateways,mqtt"
+```
+
 ## MQTT Integration
 
 Set `MQTT_HOST` to enable publishing. All other variables are optional.
