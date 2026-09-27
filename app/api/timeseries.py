@@ -11,8 +11,8 @@ Routes:
     - GET /api/timeseries/trend   -> Bucketed kW + battery level (charting)
     - GET /api/timeseries/samples -> Raw samples (troubleshooting)
     - GET /api/timeseries/status  -> Subsystem status and DB sizing
-    - GET /api/timeseries/devices -> Recorded Powerwall temperature/fan series
-    - GET /api/timeseries/device_trend -> Temperature/fan history for charts
+    - GET /api/timeseries/signals -> Recorded Powerwall temperature/fan series
+    - GET /api/timeseries/signal_trend -> Temperature/fan history for charts
 
 Query Parameters:
     daily:   days (int, default 7)  — number of days back from today
@@ -30,8 +30,8 @@ Query Parameters:
              battery/grid kW plus mean battery level (%) per bucket.
     samples: gateway (str, optional), start (unix ts), end (unix ts),
              limit (int, default 500, max 10000)
-    devices: gateway (str, optional)
-    device_trend:
+    signals: gateway (str, optional)
+    signal_trend:
              metrics (comma list, e.g. pack_temp_max,fan_a_rpm; default
              all), gateway (str), devices (comma list of device blocks),
              start / end (unix ts), hours (int, default 24, used without
@@ -185,7 +185,7 @@ async def get_status():
     return await get_timeseries_store().status()
 
 
-@router.get("/devices")
+@router.get("/signals")
 async def get_devices(gateway: Optional[str] = Query(default=None)):
     """Recorded Powerwall temperature and fan series.
 
@@ -194,11 +194,11 @@ async def get_devices(gateway: Optional[str] = Query(default=None)):
     (``first_day``/``last_day``), plus a ``metrics`` catalog of labels,
     units and chart groups (temperature, fan_speed, fan_duty).
     """
-    return await get_timeseries_store().get_device_series(gateway=gateway)
+    return await get_timeseries_store().get_signal_series(gateway=gateway)
 
 
-@router.get("/device_trend")
-async def get_device_trend(
+@router.get("/signal_trend")
+async def get_signal_trend(
     metrics: Optional[str] = Query(
         default=None, description="Comma-separated metric ids (default all)"
     ),
@@ -218,7 +218,7 @@ async def get_device_trend(
     stored local day (with ``day``). ``auto`` picks raw for windows up to 14
     days still covered by raw retention, else daily.
     """
-    return await get_timeseries_store().get_device_trend(
+    return await get_timeseries_store().get_signal_trend(
         metrics=_split(metrics),
         gateway=gateway,
         devices=_split(devices),

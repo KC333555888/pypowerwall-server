@@ -1462,7 +1462,7 @@ class GatewayManager:
             # Persist the sample for daily energy statistics (never raises;
             # no-op when the store is disabled).
             await self._record_timeseries_sample(gateway_id, gateway, data)
-            await self._record_device_sample(gateway_id, gateway, data)
+            await self._record_signal_sample(gateway_id, gateway, data)
 
             # Publish to MQTT after the cache is updated (never raises here).
             self._schedule_mqtt_publish(gateway_id)
@@ -1559,7 +1559,7 @@ class GatewayManager:
         except Exception as e:
             logger.debug(f"Time-series sample recording failed for {gateway_id}: {e}")
 
-    async def _record_device_sample(
+    async def _record_signal_sample(
         self, gateway_id: str, gateway, data: PowerwallData
     ) -> None:
         """Feed this poll's Powerwall temperatures and fan readings into the
@@ -1567,7 +1567,7 @@ class GatewayManager:
 
         Signals come from the vitals and fan_speeds already fetched this
         cycle (no extra gateway calls). The store keeps at most one snapshot
-        per PW_TIMESERIES_DEVICE_INTERVAL, so most calls return immediately.
+        per PW_TIMESERIES_SIGNAL_INTERVAL, so most calls return immediately.
         Like power samples, failures are logged and swallowed and a hung
         write is capped by a timeout.
         """
@@ -1578,7 +1578,7 @@ class GatewayManager:
             )
 
             store = get_timeseries_store()
-            if not store.device_enabled:
+            if not store.signals_enabled:
                 return
             metrics = extract_device_metrics(data.vitals, data.fan_speeds)
             if not metrics:
@@ -1587,7 +1587,7 @@ class GatewayManager:
             if ts is None or ts < 1e9:
                 ts = datetime.now().timestamp()
             await asyncio.wait_for(
-                store.record_device_sample(
+                store.record_signal_sample(
                     gateway_id, ts, metrics, timezone=gateway.timezone
                 ),
                 timeout=5.0,

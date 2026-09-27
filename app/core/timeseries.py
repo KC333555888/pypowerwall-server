@@ -32,15 +32,15 @@ Device signals (Powerwall temperatures and fans):
     - ``device_series``  one row per (gateway, device block, metric), e.g.
       ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
     - ``device_samples`` (series_id, ts, value), recorded at most every
-      PW_TIMESERIES_DEVICE_INTERVAL (default 60s; 30s or 5s for finer
-      detail) and pruned to PW_TIMESERIES_DEVICE_RETENTION (default 30d).
+      PW_TIMESERIES_SIGNAL_INTERVAL (default 60s; 30s minimum for finer
+      detail) and pruned to PW_TIMESERIES_SIGNAL_RETENTION (default 30d).
     - ``device_daily``   per series per gateway-local day: min, max, sum and
       count (so the mean), kept like daily_energy under
       PW_TIMESERIES_DAILY_RETENTION. Long-range history reads this table.
 
     At 60s a Powerwall 3 records 8 series (~11.5k rows/day, roughly
     0.4 MB/day on disk), so the 30-day default stays around 12 MB per unit.
-    30s doubles that (~24 MB); 5s (every poll) is ~12x (~145 MB).
+    30s (the minimum) doubles that (~24 MB).
 
 Energy integration:
     Trapezoidal integration between consecutive samples:
@@ -67,11 +67,11 @@ Environment Variables:
     PW_TIMESERIES_DAILY_RETENTION Daily aggregate retention (default "0" =
                                   unlimited). One row/day/gateway is tiny,
                                   so unlimited is a sensible default.
-    PW_TIMESERIES_DEVICE_RETENTION
+    PW_TIMESERIES_SIGNAL_RETENTION
                                   Device signal (temperature/fan) sample
                                   retention (default "30d"). "0" = unlimited,
                                   "-1" = do not record device signals.
-    PW_TIMESERIES_DEVICE_INTERVAL Minimum seconds between device signal
+    PW_TIMESERIES_SIGNAL_INTERVAL Minimum seconds between device signal
                                   samples per gateway (default "60s").
     PW_TIMESERIES_PATH            SQLite file path (default "/data/timeseries.db"
                                   when /data exists — e.g. the Docker image —
@@ -169,6 +169,11 @@ DEVICE_METRICS: Dict[str, Dict[str, str]] = {
     "fan_a_duty": {"label": "Fan A duty", "unit": "%", "group": "fan_duty"},
     "fan_b_duty": {"label": "Fan B duty", "unit": "%", "group": "fan_duty"},
 }
+
+# Shortest temperature/fan sample interval. These signals change slowly and
+# finer sampling costs real disk (and SD-card wear) for little insight: at
+# 30s a Powerwall 3 uses ~24 MB per 30 days; 5s would be ~145 MB.
+SIGNAL_MIN_INTERVAL = 30
 
 # Longest window (seconds) served from raw device samples; longer ranges
 # read the daily min/avg/max rollups instead.
@@ -298,8 +303,8 @@ class TimeSeriesStore:
         db_path: str,
         retention: Any = "24h",
         daily_retention: Any = "0",
-        device_retention: Any = "30d",
-        device_interval: Any = "60s",
+        signal_retention: Any = "30d",
+        signal_interval: Any = "60s",
     ):
         """Create the store.
 
@@ -315,23 +320,34 @@ class TimeSeriesStore:
             daily_retention: Daily aggregate retention (duration string or
                              seconds). 0 means unlimited. Also applies to
                              the daily device-signal rollups.
-            device_retention: Raw device-signal (temperature/fan) sample
+            signal_retention: Raw signal (temperature/fan) sample
                              retention. -1 stops recording device signals,
                              0 means unlimited.
-            device_interval: Minimum seconds between device-signal samples
-                             per gateway (floor 5s).
+            signal_interval: Minimum seconds between signal samples
+                             per gateway (floor SIGNAL_MIN_INTERVAL, 30s;
+                             lower values are raised with a warning).
         """
         self._db_path = self._resolve_db_path(str(db_path))
         self._retention = self._coerce(retention, "24h", "PW_TIMESERIES_RETENTION")
         self._daily_retention = self._coerce(
             daily_retention, "0", "PW_TIMESERIES_DAILY_RETENTION"
         )
-        self._device_retention = self._coerce(
-            device_retention, "30d", "PW_TIMESERIES_DEVICE_RETENTION"
+        self._signal_retention = self._coerce(
+            signal_retention, "30d", "PW_TIMESERIES_SIGNAL_RETENTION"
         )
-        self._device_interval = max(
-            5, self._coerce(device_interval, "60s", "PW_TIMESERIES_DEVICE_INTERVAL")
+        interval = self._coerce(
+            signal_interval, "60s", "PW_TIMESERIES_SIGNAL_INTERVAL"
         )
+        if interval < SIGNAL_MIN_INTERVAL:
+            logger.warning(
+                "PW_TIMESERIES_SIGNAL_INTERVAL=%ss is below the %ss minimum; "
+                "using %ss",
+                interval,
+                SIGNAL_MIN_INTERVAL,
+                SIGNAL_MIN_INTERVAL,
+            )
+            interval = SIGNAL_MIN_INTERVAL
+        self._signal_interval = interval
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -345,7 +361,7 @@ class TimeSeriesStore:
         self._state: Dict[str, Dict[str, Any]] = {}
         # Last device-signal sample time per gateway (interval gating) and
         # (gateway, device, metric) -> series_id lookups.
-        self._device_last: Dict[str, float] = {}
+        self._signal_last: Dict[str, float] = {}
         self._series_ids: Dict[Tuple[str, str, str], int] = {}
 
     # ------------------------------------------------------------------
@@ -389,9 +405,9 @@ class TimeSeriesStore:
         return self._retention != -1
 
     @property
-    def device_enabled(self) -> bool:
+    def signals_enabled(self) -> bool:
         """True when device signals (temperatures, fans) are recorded."""
-        return self.enabled and self._device_retention != -1
+        return self.enabled and self._signal_retention != -1
 
     def _ensure_executor(self) -> ThreadPoolExecutor:
         if self._executor is None:
@@ -719,7 +735,7 @@ class TimeSeriesStore:
     # Device signals (temperatures, fans)
     # ------------------------------------------------------------------
 
-    async def record_device_sample(
+    async def record_signal_sample(
         self,
         gateway_id: str,
         ts: float,
@@ -730,7 +746,7 @@ class TimeSeriesStore:
 
         Called every poll cycle; samples closer together than the device
         interval are skipped, so the 60s default costs ~1 row per series per
-        minute instead of per poll (5s records every poll).
+        minute instead of per poll.
 
         Args:
             gateway_id: Gateway identifier.
@@ -742,20 +758,20 @@ class TimeSeriesStore:
         Returns:
             True when the snapshot was stored.
         """
-        if not self.device_enabled or not metrics:
+        if not self.signals_enabled or not metrics:
             return False
-        last = self._device_last.get(gateway_id)
+        last = self._signal_last.get(gateway_id)
         # Poll timing jitters by a second or two; don't let a gap just short
         # of the interval (e.g. 59.9s at 60s) push the sample to the next poll.
-        slack = min(2.5, self._device_interval / 2.0)
-        if last is not None and ts - last < self._device_interval - slack:
+        slack = min(2.5, self._signal_interval / 2.0)
+        if last is not None and ts - last < self._signal_interval - slack:
             return False
-        self._device_last[gateway_id] = float(ts)
+        self._signal_last[gateway_id] = float(ts)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(),
             partial(
-                self._record_device_sample_sync,
+                self._record_signal_sample_sync,
                 gateway_id,
                 float(ts),
                 dict(metrics),
@@ -788,7 +804,7 @@ class TimeSeriesStore:
             self._series_ids[key] = series_id
         return series_id
 
-    def _record_device_sample_sync(
+    def _record_signal_sample_sync(
         self,
         gateway_id: str,
         ts: float,
@@ -845,7 +861,7 @@ class TimeSeriesStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
 
-    async def get_device_series(
+    async def get_signal_series(
         self, gateway: Optional[str] = None
     ) -> Dict[str, Any]:
         """Recorded device series with their raw and daily coverage."""
@@ -853,14 +869,14 @@ class TimeSeriesStore:
             return {"enabled": False, "series": [], "metrics": DEVICE_METRICS}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(), partial(self._get_device_series_sync, gateway)
+            self._ensure_executor(), partial(self._get_signal_series_sync, gateway)
         )
 
-    def _get_device_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
+    def _get_signal_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
         base = {
             "enabled": True,
-            "device_enabled": self.device_enabled,
-            "interval_seconds": self._device_interval,
+            "signals_enabled": self.signals_enabled,
+            "interval_seconds": self._signal_interval,
             "metrics": DEVICE_METRICS,
         }
         with self._lock:
@@ -903,7 +919,7 @@ class TimeSeriesStore:
         ]
         return {**base, "series": series}
 
-    async def get_device_trend(
+    async def get_signal_trend(
         self,
         metrics: Optional[List[str]] = None,
         gateway: Optional[str] = None,
@@ -940,7 +956,7 @@ class TimeSeriesStore:
         return await loop.run_in_executor(
             self._ensure_executor(),
             partial(
-                self._get_device_trend_sync,
+                self._get_signal_trend_sync,
                 metrics,
                 gateway,
                 devices,
@@ -952,7 +968,7 @@ class TimeSeriesStore:
             ),
         )
 
-    def _get_device_trend_sync(
+    def _get_signal_trend_sync(
         self,
         metrics: Optional[List[str]],
         gateway: Optional[str],
@@ -1001,7 +1017,7 @@ class TimeSeriesStore:
                 zones = {gw: _get_zone(timezones.get(gw)) for gw in by_gateway}
 
                 if resolution not in ("raw", "daily"):
-                    resolution = self._pick_device_resolution(
+                    resolution = self._pick_signal_resolution(
                         conn, by_gateway, zones, start, span
                     )
                 points: Dict[int, List[Dict[str, Any]]] = {i: [] for i in ids}
@@ -1009,7 +1025,7 @@ class TimeSeriesStore:
                     # ~360 points per window, never finer than the sample
                     # interval; steps of a minute or more snap to whole
                     # minutes, shorter ones to multiples of the interval.
-                    interval = float(self._device_interval)
+                    interval = float(self._signal_interval)
                     target = span / 360.0
                     unit = 60.0 if target >= 60.0 else interval
                     bucket = max(interval, round(target / unit) * unit)
@@ -1087,7 +1103,7 @@ class TimeSeriesStore:
         return result
 
     @staticmethod
-    def _pick_device_resolution(
+    def _pick_signal_resolution(
         conn: sqlite3.Connection,
         by_gateway: Dict[str, List[int]],
         zones: Dict[str, ZoneInfo],
@@ -1438,12 +1454,12 @@ class TimeSeriesStore:
                 "db_size_bytes": 0,
                 "samples": 0,
                 "daily_rows": 0,
-                "device_enabled": False,
-                "device_retention_seconds": -1,
-                "device_interval_seconds": self._device_interval,
-                "device_series": 0,
-                "device_samples": 0,
-                "device_daily_rows": 0,
+                "signals_enabled": False,
+                "signal_retention_seconds": -1,
+                "signal_interval_seconds": self._signal_interval,
+                "signal_series": 0,
+                "signal_samples": 0,
+                "signal_daily_rows": 0,
                 "write_failures": 0,
                 "gateways": [],
             }
@@ -1494,12 +1510,12 @@ class TimeSeriesStore:
             "db_size_bytes": db_size,
             "samples": samples,
             "daily_rows": daily_rows,
-            "device_enabled": self.device_enabled,
-            "device_retention_seconds": self._device_retention,
-            "device_interval_seconds": self._device_interval,
-            "device_series": device_series,
-            "device_samples": device_samples,
-            "device_daily_rows": device_daily,
+            "signals_enabled": self.signals_enabled,
+            "signal_retention_seconds": self._signal_retention,
+            "signal_interval_seconds": self._signal_interval,
+            "signal_series": device_series,
+            "signal_samples": device_samples,
+            "signal_daily_rows": device_daily,
             "write_failures": self._write_failures,
             "gateways": gateways,
         }
@@ -1562,8 +1578,8 @@ class TimeSeriesStore:
                     conn.execute(
                         "DELETE FROM device_daily WHERE day < ?", (cutoff_day,)
                     )
-                if self._device_retention > 0:
-                    cutoff = now - max(self._device_retention, RAW_KEEP_FLOOR)
+                if self._signal_retention > 0:
+                    cutoff = now - max(self._signal_retention, RAW_KEEP_FLOOR)
                     conn.execute(
                         "DELETE FROM device_samples WHERE ts < ?", (int(cutoff),)
                     )
@@ -1601,7 +1617,7 @@ class TimeSeriesStore:
                     logger.debug("TimeSeriesStore close failed: %s", e)
                 self._conn = None
             self._state.clear()
-            self._device_last.clear()
+            self._signal_last.clear()
             self._series_ids.clear()
         if self._executor is not None:
             # cancel_futures: queued writes must not reopen the closed DB
@@ -1624,8 +1640,8 @@ def get_timeseries_store() -> TimeSeriesStore:
             db_path=settings.timeseries_path,
             retention=settings.timeseries_retention,
             daily_retention=settings.timeseries_daily_retention,
-            device_retention=settings.timeseries_device_retention,
-            device_interval=settings.timeseries_device_interval,
+            signal_retention=settings.timeseries_signal_retention,
+            signal_interval=settings.timeseries_signal_interval,
         )
     return _store
 

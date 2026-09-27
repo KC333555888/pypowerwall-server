@@ -1598,7 +1598,7 @@
             const p = new URLSearchParams();
             if (state.gateway) p.set('gateway', state.gateway);
             try {
-                state.devicesInfo = await getJSON('/api/timeseries/devices?' + p.toString());
+                state.devicesInfo = await getJSON('/api/timeseries/signals?' + p.toString());
             } catch (e) {
                 state.devicesInfo = { error: e.message };
             }
@@ -1606,7 +1606,7 @@
 
         async function loadDeviceTrend() {
             const info = state.devicesInfo || {};
-            if (info.error || !info.enabled || info.device_enabled === false || !(info.series || []).length) {
+            if (info.error || !info.enabled || info.signals_enabled === false || !(info.series || []).length) {
                 state.deviceTrend = null;
                 renderDeviceCards();
                 return;
@@ -1615,7 +1615,7 @@
             const p = new URLSearchParams({ start: String(Math.floor(start)), end: String(Math.ceil(end)) });
             if (state.gateway) p.set('gateway', state.gateway);
             try {
-                state.deviceTrend = await getJSON('/api/timeseries/device_trend?' + p.toString());
+                state.deviceTrend = await getJSON('/api/timeseries/signal_trend?' + p.toString());
                 state.deviceTrend.window = { start, end };
             } catch (e) {
                 state.deviceTrend = { error: e.message };
@@ -1627,7 +1627,7 @@
             const info = state.devicesInfo || {};
             if (info.error) return `Couldn't load ${kind} history: ${esc(info.error)}`;
             if (info.enabled === false) return 'Time-series storage is turned off. Remove <code>PW_TIMESERIES_RETENTION=-1</code> to record history.';
-            if (info.device_enabled === false) return `${kind[0].toUpperCase() + kind.slice(1)} recording is turned off. Remove <code>PW_TIMESERIES_DEVICE_RETENTION=-1</code> to record it.`;
+            if (info.signals_enabled === false) return `${kind[0].toUpperCase() + kind.slice(1)} recording is turned off. Remove <code>PW_TIMESERIES_SIGNAL_RETENTION=-1</code> to record it.`;
             if (kind === 'temperature') {
                 return 'No temperature history yet. Powerwall 3 temperatures need a TEDAPI connection (Wi-Fi or wired v1r); recording starts with the first poll.';
             }
@@ -1871,7 +1871,7 @@
                 } else {
                     sel.closest('.control-group').hidden = true;
                 }
-                state.retentionText = fmtDuration(status.device_retention_seconds);
+                state.retentionText = fmtDuration(status.signal_retention_seconds);
             } catch (e) { /* selector is optional */ }
         }
 
