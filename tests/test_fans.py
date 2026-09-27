@@ -7,6 +7,9 @@ reports PCH_FanSpeed_A/B (measured RPM) and PCH_FanDuty_A/B (duty cycle, %);
 there is no target-RPM signal.
 """
 
+import pytest
+from pypowerwall.tedapi import TEDAPI
+
 PW2_FANS = {
     "PVAC--1538000-45-C--TG2": {
         "PVAC_Fan_Speed_Actual_RPM": 1175,
@@ -122,3 +125,24 @@ def test_fans_raw_passthrough(client, connected_gateway):
     """/fans returns get_fan_speeds() as cached, PW2 and PW3 alike."""
     assert _get(client, connected_gateway, "/fans", dict(PW3_FANS)).json() == PW3_FANS
     assert _get(client, connected_gateway, "/fans", dict(PW2_FANS)).json() == PW2_FANS
+
+
+@pytest.mark.skipif(
+    not hasattr(TEDAPI, "extract_pw3_fan_speeds"),
+    reason="needs pypowerwall >= 0.18.2 (PW3 fans in get_fan_speeds)",
+)
+def test_fans_pw_from_pinned_library_get_fan_speeds(client, connected_gateway):
+    """Contract with the pinned library: real TEDAPI.get_fan_speeds() output for
+    two PW3s (from get_pw3_vitals() blocks) maps to leader-first FANn keys."""
+    tedapi = TEDAPI.__new__(TEDAPI)  # no network: stub the two data sources
+    tedapi.pw3 = True
+    tedapi.get_device_controller = lambda force=False: {}
+    tedapi.get_pw3_vitals = lambda force=False: {
+        name: {**signals, "PCH_Temp": 40.0} for name, signals in PW3_FANS.items()
+    }
+    fan_speeds = tedapi.get_fan_speeds()
+    assert list(fan_speeds) == list(PW3_FANS)
+
+    data = _get(client, connected_gateway, "/fans/pw", fan_speeds).json()
+    assert data == _get(client, connected_gateway, "/fans/pw", PW3_FANS).json()
+    assert (data["FAN1_actual"], data["FAN4_duty"]) == (1395, 6.6)
