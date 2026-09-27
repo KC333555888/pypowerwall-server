@@ -519,6 +519,14 @@ class TestHistoryAPI:
         assert "{PROXY_BASE" not in resp.text
         assert "/api/timeseries/signal_trend" in resp.text
 
+    def test_energy_trend_script_shared(self, client):
+        # Console and History load one shared Energy Trend chart file
+        assert "/static/js/energy-trend.js" in client.get("/history").text
+        assert "/static/js/energy-trend.js" in client.get("/console").text
+        resp = client.get("/static/js/energy-trend.js")
+        assert resp.status_code == 200
+        assert "window.EnergyTrend" in resp.text
+
     def test_history_page_proxy_base(self, client, monkeypatch):
         import app.main as main_mod
 
