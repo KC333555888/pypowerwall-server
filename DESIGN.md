@@ -369,6 +369,43 @@ class Settings(BaseSettings):
     server_port: int = Field(default=8675, validation_alias=AliasChoices('PW_PORT', 'PORT'))
 ```
 
+### 6. History and Time-Series Data
+
+The time-series store (`app/core/timeseries.py`), the `/api/timeseries/*`
+routes and the History page (`/history`) are expected to grow. New history
+and time-series work follows these principles:
+
+1. **Record a curated set in code.** What gets recorded is a signal registry
+   plus a metric catalog in code (`SIGNAL_METRICS`: one entry per metric
+   with its source signals, label, unit, group and order; `SIGNAL_GROUPS`
+   for chart groups), added through reviewed PRs. Environment variables
+   cover only what the operator pays for: sample interval, retention and
+   off (`PW_TIMESERIES_*`), since those drive disk use and SD-card wear.
+   There are no per-signal toggles. Viewing choices (series shown,
+   Powerwall selected, range) live in the UI, in the URL and browser
+   storage, never in server config.
+2. **The UI is driven by the catalog.** The page draws one chart card per
+   catalog group with recorded data, takes labels, units, order, decimals
+   and axis rules from the catalog, and assigns colors from a palette by
+   order. A new metric, or a new chart group, appears with no page edits.
+3. **History pages are a zero-setup quick look, not a dashboard builder.**
+   Custom dashboards, alerts and long-term analytics belong in
+   Powerwall-Dashboard (Grafana/InfluxDB) and Home Assistant. Keeping the
+   server simple is what lets it complement them.
+4. **Recording adds no gateway calls, keeps database work off the event
+   loop, and never fails a poll.** Samples come from data the poll already
+   fetched. SQLite reads and writes run on the store's worker thread with
+   a timeout, reads are bounded so they can't starve writes, and storage
+   errors are counted and logged, never raised into polling.
+5. **Setting and API names are permanent once released.** Environment
+   variables, routes, response fields and stored metric ids can't change
+   later without breaking someone (no breaking changes), so they are chosen
+   deliberately before release; a pre-release rename migrates stored rows.
+6. **Shared chart code lives in one shared static script.** Charts used by
+   more than one page (for example the Energy Trend on the Console and
+   History pages) live in `app/static/js/charts.js` (`window.PWCharts`)
+   with their styles in `app/static/css/charts.css`, so a fix lands once.
+
 ---
 
 ## Threading & Async Model
