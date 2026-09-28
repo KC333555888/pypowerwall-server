@@ -89,8 +89,11 @@ def _check_day(value: Optional[str], name: str) -> Optional[str]:
     return value
 
 
-# Latest epoch accepted for start/end (2100-01-01); rejects inf, NaN and
-# absurd values that would otherwise raise deep in the store (HTTP 500).
+# Latest epoch accepted for /signal_trend start/end (2100-01-01); rejects inf,
+# NaN and absurd values that would otherwise raise deep in the store (HTTP
+# 500). Only the new /signal_trend route is bounded this way: /trend and
+# /samples were already released and keep accepting open-ended values such as
+# end=9999999999 (/trend rejects only NaN/inf, which used to raise a 500).
 MAX_EPOCH = 4102444800
 
 
@@ -124,26 +127,30 @@ def _annotate_powerwalls(result: Dict[str, Any]) -> Dict[str, Any]:
     Labels match the Console and ``/pod`` (``PW1``, ``PW2``, ``PW1 Exp 1``),
     so every API client numbers units the same way. A series whose serial
     isn't in the gateway's battery list (e.g. before the first full poll)
-    is numbered after the known units: inverter blocks first, then serial.
+    is numbered after every known unit, in serial order.
+
+    Args:
+        result: A get_signal_series() / get_signal_trend() response; its
+            ``series`` entries are updated in place.
+
+    Returns:
+        The same ``result``.
     """
     series = result.get("series") or []
     if not series:
         return result
     labels = _powerwall_labels()
-    unknown: Dict[str, Dict[str, bool]] = {}
+    unknown: Dict[str, set] = {}
     for entry in series:
         serial = str(entry.get("device", "")).rsplit("--", 1)[-1]
         if serial not in labels.get(entry.get("gateway"), {}):
-            has_inverter = str(entry.get("device", "")).split("--")[0] in (
-                "TEPINV",
-                "PVAC",
-            )
-            seen = unknown.setdefault(entry.get("gateway"), {})
-            seen[serial] = seen.get(serial, False) or has_inverter
+            unknown.setdefault(entry.get("gateway"), set()).add(serial)
     for gateway_id, serials in unknown.items():
         known = labels.setdefault(gateway_id, {})
-        number = sum(1 for v in known.values() if " Exp" not in v["label"])
-        for serial in sorted(serials, key=lambda s: (not serials[s], s)):
+        # Next free unit number after every known one (expansions included),
+        # so an unknown serial never shares an order with a known unit
+        number = max((v["order"] // 100 for v in known.values()), default=0)
+        for serial in sorted(serials):
             number += 1
             known[serial] = {"label": f"PW{number}", "order": number * 100}
     for entry in series:
@@ -233,8 +240,8 @@ async def get_today():
 async def get_trend(
     hours: int = Query(default=24, ge=1, le=168),
     gateway: Optional[str] = Query(default=None),
-    start: Optional[float] = _epoch_query("Window start, epoch seconds"),
-    end: Optional[float] = _epoch_query("Window end, epoch seconds"),
+    start: Optional[float] = Query(default=None, allow_inf_nan=False),
+    end: Optional[float] = Query(default=None, allow_inf_nan=False),
     fit: bool = Query(default=False),
 ):
     """Bucketed time series of power (kW) and battery level (%) for charts.
@@ -253,8 +260,8 @@ async def get_trend(
 @router.get("/samples")
 async def get_samples(
     gateway: Optional[str] = Query(default=None),
-    start: Optional[float] = _epoch_query("Window start, epoch seconds"),
-    end: Optional[float] = _epoch_query("Window end, epoch seconds"),
+    start: Optional[float] = Query(default=None),
+    end: Optional[float] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=10000),
 ):
     """Raw power samples, ascending by time (troubleshooting)."""

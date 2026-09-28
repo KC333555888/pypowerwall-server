@@ -55,11 +55,6 @@
   - PW3 `get_battery_block()` fix for basic/WiFi TEDAPI mode (jasonacox/pypowerwall#396), `python -m pypowerwall register` honoring `-authpath` (jasonacox/pypowerwall#383), and the 0.18.0 packaging changes.
 - **Python 3.13 in CI** — the `pytest` and simulator workflows now test Python 3.10–3.13 (previously 3.10–3.12, which is why the race went unnoticed), and `pyproject.toml` lists the 3.13 classifier. `requires-python = ">=3.10"` already allowed 3.13 installs.
 
-### [0.7.0] - Upcoming
-
-**Added:**
-- **Console card visibility and kiosk mode** (discussion #90) — a **Cards** menu in the console header shows or hides each card; the remaining cards in a row widen to fill it. **Kiosk** hides the header and the status banner (the banner stays visible while disconnected, so a wall display never shows frozen data without a warning) and tightens the margins; faint **Cards** / **Exit kiosk** buttons in the top-right corner appear on hover, tap or keyboard focus, and Esc exits (unless a dialog is open). Choices are saved per browser (`pw_console_hidden_cards`, `pw_console_kiosk`). URL parameters configure a kiosk browser without saving anything: `/console?kiosk=1&hide=alerts,gateways,mqtt`.
-
 ### [0.6.6] - 2026-09-13
 
 **Added:**

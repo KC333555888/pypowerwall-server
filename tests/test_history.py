@@ -479,38 +479,48 @@ class TestMetricRename:
 
 
 class TestPowerwallNumbering:
-    """Units are numbered like the Console / pod: battery list order."""
+    """Units are numbered by the /pod index, exactly like /pod and the Console."""
 
-    SYSTEM_STATUS = {
-        "battery_blocks": [
-            {"PackageSerialNumber": "TG1LEAD"},
-            {"PackageSerialNumber": "TG1FOLLOW"},
-            {"PackageSerialNumber": "TG1EXP1"},
-            {"PackageSerialNumber": "TG1EXP2", "Type": "BatteryExpansion"},
-        ]
-    }
-    CONFIG = {
-        "battery_blocks": [
-            {
-                "vin": "1707000-11-J--TG1LEAD",
-                "battery_expansions": [{"din": "1807000-20-A--TG1EXP1"}],
-            },
-            {"vin": "1707000-11-J--TG1FOLLOW"},
-        ]
-    }
-
-    def test_labels_follow_battery_list_with_expansions(self):
+    def test_labels_follow_pod_index(self):
         from app.api.legacy import powerwall_unit_labels
 
-        labels = powerwall_unit_labels(self.SYSTEM_STATUS, self.CONFIG)
-        assert labels["TG1LEAD"]["label"] == "PW1"
-        assert labels["TG1FOLLOW"]["label"] == "PW2"
-        # Serial order would put the follower first; the battery list wins
-        assert labels["TG1EXP1"]["label"] == "PW1 Exp 1"
-        assert labels["TG1LEAD"]["order"] < labels["TG1EXP1"]["order"]
-        assert labels["TG1EXP1"]["order"] < labels["TG1FOLLOW"]["order"]
-        # An expansion marked only by Type still gets an Exp label
-        assert "Exp" in labels["TG1EXP2"]["label"]
+        system_status = {
+            "battery_blocks": [
+                {"PackageSerialNumber": "TG1LEAD"},
+                {"PackageSerialNumber": "TG1EXP1"},
+                {"PackageSerialNumber": "TG1FOLLOW"},
+            ]
+        }
+        config = {
+            "battery_blocks": [
+                {
+                    "vin": "1707000-11-J--TG1LEAD",
+                    "battery_expansions": [{"din": "1807000-20-A--TG1EXP1"}],
+                },
+                {"vin": "1707000-11-J--TG1FOLLOW"},
+            ]
+        }
+        assert powerwall_unit_labels(system_status, config) == {
+            "TG1LEAD": {"label": "PW1", "order": 100},
+            "TG1EXP1": {"label": "PW1 Exp 1", "order": 101},
+            # /pod calls the third block PW3, so history does too
+            "TG1FOLLOW": {"label": "PW3", "order": 300},
+        }
+
+    def test_type_only_expansion(self):
+        from app.api.legacy import powerwall_unit_labels
+
+        system_status = {
+            "battery_blocks": [
+                {"PackageSerialNumber": "TG1LEAD"},
+                {"PackageSerialNumber": "TG1EXP", "Type": "BatteryExpansion"},
+            ]
+        }
+        # No TEDAPI config: the block Type alone marks the expansion
+        assert powerwall_unit_labels(system_status, None) == {
+            "TG1LEAD": {"label": "PW1", "order": 100},
+            "TG1EXP": {"label": "PW2 Exp", "order": 200},
+        }
         assert powerwall_unit_labels(None, None) == {}
 
     def test_series_are_annotated(self, monkeypatch):
@@ -519,30 +529,54 @@ class TestPowerwallNumbering:
         monkeypatch.setattr(
             api,
             "_powerwall_labels",
-            lambda: {"gw1": {"TG1LEAD": {"label": "PW1", "order": 100}}},
+            lambda: {
+                "gw1": {
+                    "TG1LEAD": {"label": "PW1", "order": 100},
+                    "TG1ORPHAN": {"label": "PW2 Exp", "order": 200},
+                }
+            },
         )
         result = api._annotate_powerwalls(
             {
                 "series": [
                     {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1LEAD"},
                     {"gateway": "gw1", "device": "TEPINV--1707000-11-J--TG1LEAD"},
-                    # Not in the battery list yet: numbered after known units
+                    # Not in the battery list yet: numbered after every known
+                    # unit, never sharing an order with the orphan expansion
                     {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1NEW"},
                 ]
             }
         )
-        labels = [s["powerwall"] for s in result["series"]]
-        assert labels == ["PW1", "PW1", "PW2"]
-        assert result["series"][2]["powerwall_order"] == 200
+        labels = [(s["powerwall"], s["powerwall_order"]) for s in result["series"]]
+        assert labels == [("PW1", 100), ("PW1", 100), ("PW3", 300)]
 
 
 class TestSignalTrendBounds:
     @pytest.mark.parametrize(
         "query", ["start=nan", "start=inf", "start=1e20", "end=-1"]
     )
-    @pytest.mark.parametrize("route", ["signal_trend", "trend", "samples"])
-    def test_bad_times_are_422(self, client, route, query):
-        assert client.get(f"/api/timeseries/{route}?{query}").status_code == 422
+    def test_signal_trend_bad_times_are_422(self, client, query):
+        assert client.get(f"/api/timeseries/signal_trend?{query}").status_code == 422
+
+    @pytest.mark.parametrize("query", ["start=nan", "end=inf"])
+    def test_trend_rejects_only_non_finite(self, client, query):
+        assert client.get(f"/api/timeseries/trend?{query}").status_code == 422
+
+    @pytest.mark.parametrize(
+        "route,query",
+        [
+            # Released routes keep accepting what they accepted on main
+            ("trend", "end=9999999999"),
+            ("trend", "start=0&end=9999999999"),
+            ("trend", "start=-1"),
+            ("trend", "start=1790000000000"),  # milliseconds
+            ("samples", "end=9999999999"),
+            ("samples", "start=-1"),
+            ("samples", "start=nan"),
+        ],
+    )
+    def test_released_routes_unchanged(self, client, route, query):
+        assert client.get(f"/api/timeseries/{route}?{query}").status_code == 200
 
     @pytest.mark.asyncio
     async def test_raw_beyond_max_span_reads_daily(self, tmp_path):

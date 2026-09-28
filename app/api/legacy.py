@@ -140,13 +140,16 @@ def _expansion_parent_indexes(
 def powerwall_unit_labels(
     system_status: Optional[dict], tedapi_config: Optional[dict]
 ) -> Dict[str, Dict[str, Any]]:
-    """Powerwall label and display order per battery serial, as the Console shows.
+    """Powerwall label and display order per battery serial, matching ``/pod``.
 
-    Numbering follows ``system_status["battery_blocks"]`` order (the same order
-    as ``/pod``): each Powerwall gets ``PW1``, ``PW2`` ...; a battery expansion
-    is labelled after its leader (``PW1 Exp 1``) and sorts right after it.
-    Expansions are found the way the Console finds them: the TEDAPI config's
-    ``battery_expansions`` lists, or a block ``Type`` of ``BatteryExpansion``.
+    Numbering is the ``/pod`` index: the i-th entry of
+    ``system_status["battery_blocks"]`` is ``PWi`` (order ``i * 100``), exactly
+    as ``/pod`` and the Console number it. A battery expansion is labelled
+    after its leader, ``PW{leader} Exp {n}`` (order ``leader * 100 + n``), so
+    it sorts right after the leader. Expansions are found the way the Console
+    finds them: the TEDAPI config's ``battery_expansions`` lists, or a block
+    ``Type`` of ``BatteryExpansion``; one with no known leader is
+    ``PW{i} Exp``.
 
     Args:
         system_status: Cached ``/api/system_status`` payload.
@@ -155,6 +158,10 @@ def powerwall_unit_labels(
     Returns:
         ``{serial: {"label": str, "order": int}}``; empty when the battery
         list is unavailable.
+
+    Example:
+        With battery blocks ``[LEAD, EXP, FOLLOW]`` where EXP expands LEAD:
+        ``LEAD -> PW1``, ``EXP -> PW1 Exp 1``, ``FOLLOW -> PW3``.
     """
     if not isinstance(system_status, dict):
         return {}
@@ -163,39 +170,26 @@ def powerwall_unit_labels(
         return {}
     parents = _expansion_parent_indexes(system_status, tedapi_config)
     labels: Dict[str, Dict[str, Any]] = {}
-    leader_numbers: Dict[int, int] = {}
     exp_counts: Dict[int, int] = {}
-    number = 0
-    for index, block in enumerate(blocks, 1):
-        if not isinstance(block, dict) or index in parents:
-            continue
-        if block.get("Type") == "BatteryExpansion":
-            continue
-        number += 1
-        leader_numbers[index] = number
-        serial = _device_serial(block.get("PackageSerialNumber"))
-        if serial:
-            labels[serial] = {"label": f"PW{number}", "order": number * 100}
     for index, block in enumerate(blocks, 1):
         if not isinstance(block, dict):
-            continue
-        leader = parents.get(index)
-        if leader is None and block.get("Type") != "BatteryExpansion":
             continue
         serial = _device_serial(block.get("PackageSerialNumber"))
         if not serial:
             continue
-        if leader in leader_numbers:
+        leader = parents.get(index)
+        if leader is not None:
             exp_counts[leader] = exp_counts.get(leader, 0) + 1
             count = exp_counts[leader]
             labels[serial] = {
-                "label": f"PW{leader_numbers[leader]} Exp {count}",
-                "order": leader_numbers[leader] * 100 + count,
+                "label": f"PW{leader} Exp {count}",
+                "order": leader * 100 + count,
             }
+        elif block.get("Type") == "BatteryExpansion":
+            # Expansion whose leader isn't known from the TEDAPI config
+            labels[serial] = {"label": f"PW{index} Exp", "order": index * 100}
         else:
-            # Expansion whose leader isn't known: number it on its own
-            number += 1
-            labels[serial] = {"label": f"PW{number} Exp", "order": number * 100}
+            labels[serial] = {"label": f"PW{index}", "order": index * 100}
     return labels
 
 

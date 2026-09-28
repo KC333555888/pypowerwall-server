@@ -706,7 +706,7 @@ return `503`; a Tesla-side error returns `502`, and an invalid POST body `400`.
 - `GET /api/timeseries/signals` - Recorded temperature/fan series per gateway and device (each with its `powerwall` label, e.g. `PW1` / `PW1 Exp 1`, and the time range it covers), plus the `metrics` / `groups` catalog and gateway names
 - `GET /api/timeseries/signal_trend` - Temperature/fan history for charting, with avg/min/max and sample count per point (filters: `metrics`, `gateway`, `devices`, `start`, `end`, `hours`; `resolution=auto|raw|daily`; `raw` is served as daily beyond 14 days or ~500k rows)
 
-`start` / `end` on `/trend`, `/samples` and `/signal_trend` are epoch seconds between 0 and 4102444800 (2100-01-01); other values return 422.
+On `/signal_trend`, `start` / `end` are epoch seconds between 0 and 4102444800 (2100-01-01); other values return 422. `/trend` rejects only non-finite values (`nan`, `inf`).
 
 All report `{"enabled": false, ...}` when disabled (`PW_TIMESERIES_RETENTION=-1`).
 
