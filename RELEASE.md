@@ -5,13 +5,18 @@
 ### [0.8.0] - Upcoming
 
 **Added:**
-- **History page (`/history`)** — look up daily energy for any date range (1 hour to all stored history): range totals (solar, best solar day, home, battery in/out, grid import/export, self-powered %), a per-day chart with series toggles, a table and CSV download; on the 1h/6h/24h ranges it shows the console's Energy Trend chart instead (solar, home, battery and grid kW plus battery level % on a right axis). The range, gateway, selected Powerwall and fan speed/duty view are kept in the URL for bookmarking. Linked from the console header and the Daily Energy card. Charts are drawn on canvas with no external libraries, so the page works without internet access.
-- **Powerwall temperature and fan history** — the time-series store now records each Powerwall's battery pack max/min, shunt and inverter ambient temperatures (Powerwall 2 ambient too) and inverter fan speed (rpm) and duty cycle (%) once a minute by default, from data each poll already fetches. Signals are stored as generic per-device series, so adding one needs no schema change, with a daily low/average/high kept long-term. New settings `PW_TIMESERIES_SIGNAL_RETENTION` (default `30d`; `-1` stops recording) and `PW_TIMESERIES_SIGNAL_INTERVAL` (default `60s`; minimum `30s`). The History page draws one chart card per signal group from the catalog (a new metric or group needs no page change), each with a Powerwall selector (All / PW1 / PW2 …, one unit at a time to cut clutter), 1h/6h ranges for fine detail (steps down to the sample interval), a °C/°F switch and low/average/high for the range. `PCH_heatsinkTemp` is not recorded since it reads a constant on current firmware.
-- **Time-series API** — `GET /api/timeseries/daily` accepts `start`/`end` (`YYYY-MM-DD`) for any range of days; new `GET /api/timeseries/signals` and `GET /api/timeseries/signal_trend`; `/api/timeseries/status` reports signal sample counts and settings.
+- **History page (`/history`)** — look up daily energy for any date range (1 hour to all stored history): range totals (solar, best solar day, home, battery in/out, grid import/export, self-powered %), a per-day chart with series toggles, a table and CSV download; on the 1h/6h/24h ranges it shows the console's Energy Trend chart instead (solar, home, battery and grid kW plus battery level % on a right axis). The range, gateway, selected Powerwall and fan speed/duty view are kept in the URL for bookmarking. Linked from the console header and the Daily Energy card. Charts are drawn on canvas with no external libraries, so the page works without internet access. (#130)
+- **Powerwall temperature and fan history** — the time-series store now records each Powerwall's battery pack max/min, shunt and inverter ambient temperatures (Powerwall 2 ambient too) and inverter fan speed (rpm) and duty cycle (%) once a minute by default, from data each poll already fetches. Signals are stored as generic per-device series, so adding one needs no schema change, with a daily low/average/high kept long-term. New settings `PW_TIMESERIES_SIGNAL_RETENTION` (default `30d`; `-1` stops recording) and `PW_TIMESERIES_SIGNAL_INTERVAL` (default `60s`; minimum `30s`). The History page draws one chart card per signal group from the catalog (a new metric or group needs no page change), each with a Powerwall selector (All / PW1 / PW2 …, one unit at a time to cut clutter), 1h/6h ranges for fine detail (steps down to the sample interval), a °C/°F switch and low/average/high for the range. `PCH_heatsinkTemp` is not recorded since it reads a constant on current firmware. (#130)
+- **Time-series API** — `GET /api/timeseries/daily` accepts `start`/`end` (`YYYY-MM-DD`) for any range of days; new `GET /api/timeseries/signals` and `GET /api/timeseries/signal_trend`; `/api/timeseries/status` reports signal sample counts and settings. (#130)
 
 **Fixed:**
-- **Console Energy Trend: shared chart code** — the chart now lives in `app/static/js/energy-trend.js`, shared with the History page; it also gains sharper rendering on high-DPI screens and tap-to-inspect on touch screens.
-- **Console Energy Trend: overlapping axis labels** — when battery or grid power goes negative, the kW label nearest the zero line no longer prints on top of the "0" label.
+- **Console Energy Trend: shared chart code** — the chart now lives in `app/static/js/energy-trend.js`, shared with the History page; it also gains sharper rendering on high-DPI screens and tap-to-inspect on touch screens. (#130)
+- **Console Energy Trend: overlapping axis labels** — when battery or grid power goes negative, the kW label nearest the zero line no longer prints on top of the "0" label. (#130)
+
+### [0.7.1] - 2026-09-27
+
+**Fixed:**
+- **Cloud-control fallback no longer logs grid-getter errors** — when the hybrid cloud-control connection (cloud auth + FleetAPI both failing) degrades to pypowerwall's local client, `get_grid_charging()`/`get_grid_export()` are unsupported stubs that logged an ERROR on every poll cycle. All four cloud-control grid-getter call sites (including the Basic LAN supplementary reads) are now gated on the grid-controls support check, silencing the repeat of the #114 log spam via the cloud-control path. (#114, #129; follow-up to #117)
 
 ### [0.7.0] - 2026-09-26
 
@@ -46,6 +51,11 @@
   - Cloud: automatic recovery when Tesla re-provisions a site (jasonacox/pypowerwall#382).
   - PW3 `get_battery_block()` fix for basic/WiFi TEDAPI mode (jasonacox/pypowerwall#396), `python -m pypowerwall register` honoring `-authpath` (jasonacox/pypowerwall#383), and the 0.18.0 packaging changes.
 - **Python 3.13 in CI** — the `pytest` and simulator workflows now test Python 3.10–3.13 (previously 3.10–3.12, which is why the race went unnoticed), and `pyproject.toml` lists the 3.13 classifier. `requires-python = ">=3.10"` already allowed 3.13 installs.
+
+### [0.7.0] - Upcoming
+
+**Added:**
+- **Console card visibility and kiosk mode** (discussion #90) — a **Cards** menu in the console header shows or hides each card; the remaining cards in a row widen to fill it. **Kiosk** hides the header and the status banner (the banner stays visible while disconnected, so a wall display never shows frozen data without a warning) and tightens the margins; faint **Cards** / **Exit kiosk** buttons in the top-right corner appear on hover, tap or keyboard focus, and Esc exits (unless a dialog is open). Choices are saved per browser (`pw_console_hidden_cards`, `pw_console_kiosk`). URL parameters configure a kiosk browser without saving anything: `/console?kiosk=1&hide=alerts,gateways,mqtt`.
 
 ### [0.6.6] - 2026-09-13
 

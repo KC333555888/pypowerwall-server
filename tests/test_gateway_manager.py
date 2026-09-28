@@ -1145,3 +1145,37 @@ async def test_hybrid_local_skips_stub_and_uses_cloud_fallback(
         assert status.data.grid_export == "battery_ok"
     finally:
         mock_gateway_manager._cloud_control = None
+
+
+@pytest.mark.asyncio
+async def test_cloud_control_local_fallback_skips_stub_grid_getters(
+    mock_gateway_manager, mock_pypowerwall
+):
+    """Cloud-control client that degraded to local mode must not be polled.
+
+    When FleetAPI and cloud auth both fail, the hybrid cloud-control
+    connection (auto_select=True) can land on the local client, where
+    get_grid_charging()/get_grid_export() are ERROR-logging stubs. The poll
+    loop must gate the fallback reads on _grid_controls_supported() so the
+    #114 log spam does not return via the cloud-control path.
+    """
+    mock_pypowerwall.tedapi_mode = "hybrid"
+    cloud = Mock(spec=["get_grid_charging", "get_grid_export", "cloudmode",
+                       "fleetapi", "tedapi_mode"])
+    cloud.cloudmode = False
+    cloud.fleetapi = False
+    cloud.tedapi_mode = None  # local stubs
+    mock_gateway_manager._cloud_control = cloud
+    gw_id = _add_grid_gateway(mock_gateway_manager, mock_pypowerwall)
+
+    try:
+        await mock_gateway_manager._poll_gateway(gw_id)
+        await mock_gateway_manager._poll_gateway(gw_id)
+
+        cloud.get_grid_charging.assert_not_called()
+        cloud.get_grid_export.assert_not_called()
+        status = mock_gateway_manager.get_gateway(gw_id)
+        assert status.data.grid_charging is None
+        assert status.data.grid_export is None
+    finally:
+        mock_gateway_manager._cloud_control = None
