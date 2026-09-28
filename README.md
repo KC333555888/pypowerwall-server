@@ -354,21 +354,26 @@ temperatures, Fan speed, Fan duty cycle), built entirely from the catalog
 at `/api/timeseries/signals`: a new metric, or a whole new group, appears
 with no page changes. Cards have a °C/°F switch (for °C series), **Show**
 toggles when a group has several metrics, and low/average/high for the
-range. With more than one Powerwall, an **All / PW1 / PW2 …** selector on
-each card shows one unit at a time (PW1 is the unit with the inverter; a
-Powerwall 3's battery and inverter readings are grouped by serial number),
-or all of them told apart by line style. Ranges up to 14 days use the raw
-samples, averaged into about 360 steps per chart (never finer than
-`PW_TIMESERIES_SIGNAL_INTERVAL`, with the low/high of each step); longer
-ranges use the daily low/average/high. The **1h** and **6h** ranges show
+range (the average is weighted by sample count). With more than one
+Powerwall, an **All / PW1 / PW2 …** selector shows one unit at a time, or
+all of them told apart by line style. Units are numbered by the server
+exactly as the Console and `/pod` number them (battery-list order, with
+expansion packs labelled after their leader, e.g. `PW1 Exp 1`), and every
+series from `/api/timeseries/signals` and `/signal_trend` carries that
+`powerwall` label. Ranges up to 14 days use the raw samples, averaged into
+about 360 steps per chart (never finer than `PW_TIMESERIES_SIGNAL_INTERVAL`,
+with the low/high of each step); longer ranges, and any request that would
+scan more than about 500k raw rows, use the daily low/average/high. The **1h** and **6h** ranges show
 every stored sample and refresh every minute; the energy card shows today
 for those ranges, since energy is totalled per day.
 
-The range, gateway and the Powerwall selected on each card
-(`<group>_pw`) are kept in the URL, so a view can be bookmarked, e.g.
-`/history?range=90d` or `/history?range=6h&temperature_pw=PW2`. Powerwall
-numbering is the same on every card. Under `PROXY_BASE_URL` it is at
-`<base>/history`.
+The range, gateway, selected Powerwall (`pw=`) and any series you switch
+off (`hide=`, also remembered in the browser) are kept in the URL, so a
+view can be bookmarked, e.g. `/history?range=90d` or
+`/history?range=6h&pw=PW2&hide=fan_b_rpm`. Under `PROXY_BASE_URL` it is at
+`<base>/history`. The Console's Energy Trend and the History charts share
+one script, `app/static/js/charts.js`, and stylesheet,
+`app/static/css/charts.css`.
 
 ### Configuration File (gateways.yaml)
 
@@ -698,8 +703,10 @@ return `503`; a Tesla-side error returns `502`, and an invalid POST body `400`.
 - `GET /api/timeseries/trend?hours=24` - Bucketed kW + battery level for charting (per-gateway mean, summed across gateways)
 - `GET /api/timeseries/samples` - Raw samples (troubleshooting; filters: `gateway`, `start`, `end`, `limit`) — includes battery level (`soe`)
 - `GET /api/timeseries/status` - Subsystem status, retention settings, DB size
-- `GET /api/timeseries/signals` - Recorded temperature/fan series per gateway and device, with the time range each covers and a catalog of metric labels and units
-- `GET /api/timeseries/signal_trend` - Temperature/fan history for charting, with avg/min/max per point (filters: `metrics`, `gateway`, `devices`, `start`, `end`, `hours`; `resolution=auto|raw|daily`)
+- `GET /api/timeseries/signals` - Recorded temperature/fan series per gateway and device (each with its `powerwall` label, e.g. `PW1` / `PW1 Exp 1`, and the time range it covers), plus the `metrics` / `groups` catalog and gateway names
+- `GET /api/timeseries/signal_trend` - Temperature/fan history for charting, with avg/min/max and sample count per point (filters: `metrics`, `gateway`, `devices`, `start`, `end`, `hours`; `resolution=auto|raw|daily`; `raw` is served as daily beyond 14 days or ~500k rows)
+
+`start` / `end` on `/trend`, `/samples` and `/signal_trend` are epoch seconds between 0 and 4102444800 (2100-01-01); other values return 422.
 
 All report `{"enabled": false, ...}` when disabled (`PW_TIMESERIES_RETENTION=-1`).
 
