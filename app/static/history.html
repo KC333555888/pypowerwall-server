@@ -711,6 +711,28 @@
             return b;
         }
 
+        // Re-render a region without the page jumping: hold its height while it
+        // is rebuilt (so the browser doesn't clamp the scroll position to a
+        // briefly shorter page), then restore scroll and keyboard focus
+        function keepPlace(region, render) {
+            const y = window.scrollY;
+            const focused = document.activeElement;
+            const focusCard = focused && region.contains(focused) ? focused.closest('section')?.getAttribute('aria-labelledby') : null;
+            const focusText = focusCard ? focused.textContent : null;
+            region.style.minHeight = `${region.offsetHeight}px`;
+            try {
+                render();
+            } finally {
+                region.style.minHeight = '';
+                window.scrollTo(window.scrollX, y);
+                if (focusCard) {
+                    const card = region.querySelector(`section[aria-labelledby="${focusCard}"]`);
+                    const again = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent === focusText);
+                    if (again) again.focus({ preventScroll: true });
+                }
+            }
+        }
+
         function makeCard(container, id, title) {
             const section = document.createElement('section');
             section.className = 'card';
@@ -765,6 +787,9 @@
         }
 
         function renderEnergy() {
+            keepPlace($('energy-body'), renderEnergyNow);
+        }
+        function renderEnergyNow() {
             const body = $('energy-body');
             const rows = state.energyDays;
             body.replaceChildren();
@@ -999,6 +1024,9 @@
 
         // One card per signal group with data, in catalog order
         function renderSignalCards() {
+            keepPlace($('signal-cards'), renderSignalCardsNow);
+        }
+        function renderSignalCardsNow() {
             const wrap = $('signal-cards');
             wrap.replaceChildren();
             C.prune();
