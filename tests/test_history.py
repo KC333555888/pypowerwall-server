@@ -1110,3 +1110,64 @@ class TestReviewCoverage:
         values = [p["avg"] for p in body["series"][0]["points"]]
         assert 99.0 not in values and 30.0 in values
         await store.stop()
+
+
+class TestReadLane:
+    """Queries use a read-only connection on their own thread (WAL)."""
+
+    @pytest.mark.asyncio
+    async def test_long_read_does_not_delay_writes(self, tmp_path):
+        import asyncio
+
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_sample("gw1", now - 10, 1000, 500, 0, -500)
+
+        def slow_read():
+            # A query holding its connection (and a read transaction) for 2 s
+            with store._reader() as open_conn:
+                conn = open_conn()
+                conn.execute("BEGIN")
+                conn.execute("SELECT COUNT(*) FROM samples").fetchone()
+                time.sleep(2.0)
+                conn.execute("COMMIT")
+
+        loop = asyncio.get_running_loop()
+        reading = loop.run_in_executor(store._query_executor(), slow_read)
+        await asyncio.sleep(0.2)  # the read is in progress
+        started = time.monotonic()
+        await asyncio.wait_for(
+            store.record_sample("gw1", now, 1000, 500, 0, -500), timeout=1.0
+        )
+        await asyncio.wait_for(
+            store.record_signal_sample("gw1", now, {(POD, "pack_temp_max"): 30.0}),
+            timeout=1.0,
+        )
+        assert time.monotonic() - started < 1.0
+        await reading
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_reads_see_committed_writes(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_sample("gw1", now - 30, 1000, 500, 0, -500)
+        await store.record_sample("gw1", now, 1000, 500, 0, -500)
+        assert (await store.get_samples(gateway="gw1"))["count"] == 2
+        assert store._read_conn is not None  # served by the read lane
+        await store.record_signal_sample("gw1", now, {(POD, "pack_temp_max"): 31.0})
+        series = (await store.get_signal_series())["series"]
+        assert [s["metric"] for s in series] == ["pack_temp_max"]
+        assert (await store.status())["samples"] == 2
+        await store.stop()
+        assert store._read_conn is None and store._read_executor is None
+
+    @pytest.mark.asyncio
+    async def test_memory_database_falls_back_to_one_lane(self):
+        store = TimeSeriesStore(db_path=":memory:", signal_interval="60s")
+        now = time.time()
+        await store.record_sample("gw1", now - 30, 1000, 500, 0, -500)
+        await store.record_sample("gw1", now, 1000, 500, 0, -500)
+        assert (await store.get_samples(gateway="gw1"))["count"] == 2
+        assert store._read_conn is None and store._read_executor is None
+        await store.stop()

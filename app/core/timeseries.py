@@ -54,10 +54,21 @@ Energy integration:
       performed on real elapsed time; only day attribution uses local dates.
 
 Thread safety:
-    All SQLite access is serialized through a single worker thread
-    (dedicated ThreadPoolExecutor(max_workers=1)) plus an RLock, mirroring
-    the StatsTracker pattern. WAL mode allows the API readers to query
-    without blocking the writer.
+    Two lanes, both off the event loop:
+    - Writer lane: recording, daily rollups, integration state, pruning
+      and the /today totals run on one worker thread
+      (ThreadPoolExecutor(max_workers=1, thread_name_prefix="timeseries"))
+      with the read-write connection, serialized by an RLock.
+    - Read lane: the API queries (/daily, /trend, /samples, /signals,
+      /signal_trend and the /status counts) run on a second worker thread
+      ("timeseries-read") with a read-only connection
+      (file:...?mode=ro), guarded by its own lock. They never take the
+      writer's RLock, and WAL mode lets them read while the writer writes,
+      so a long history query can't delay recording.
+    For ":memory:" databases (tests), or if a read-only open fails, queries
+    fall back to the writer lane. Query sizes stay bounded (raw signal
+    reads switch to daily rollups), which keeps reads short and WAL
+    checkpoints moving.
 
 Environment Variables:
     PW_TIMESERIES_RETENTION       Raw sample retention (default "24h").
@@ -89,10 +100,12 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -436,6 +449,14 @@ class TimeSeriesStore:
         # gating, and the (gateway, device, metric) -> series_id cache.
         self._signal_last: Dict[Tuple[str, str, str], float] = {}
         self._series_ids: Dict[Tuple[str, str, str], int] = {}
+        # Read lane: a second, read-only connection on its own thread so
+        # queries never wait behind (or block) recording. WAL mode lets it
+        # read while the writer writes. Unavailable for ":memory:" or when a
+        # read-only open fails; queries then share the writer lane.
+        self._read_conn: Optional[sqlite3.Connection] = None
+        self._read_executor: Optional[ThreadPoolExecutor] = None
+        self._read_lock = threading.Lock()
+        self._read_unavailable = self._db_path == ":memory:"
 
     # ------------------------------------------------------------------
     # Helpers
@@ -488,6 +509,70 @@ class TimeSeriesStore:
                 max_workers=1, thread_name_prefix="timeseries"
             )
         return self._executor
+
+    def _ensure_read_executor(self) -> ThreadPoolExecutor:
+        """The read lane's single worker thread (separate from the writer)."""
+        if self._read_executor is None:
+            self._read_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="timeseries-read"
+            )
+        return self._read_executor
+
+    def _query_executor(self) -> ThreadPoolExecutor:
+        """Executor for API queries: the read lane when available."""
+        if self._read_unavailable:
+            return self._ensure_executor()
+        return self._ensure_read_executor()
+
+    def _ensure_read_conn(self) -> Optional[sqlite3.Connection]:
+        """Open (lazily) the read-only connection. Caller holds _read_lock.
+
+        The writer creates the database and tables first. Never raises:
+        returns None (and stops trying) when a read-only open isn't
+        possible, so callers fall back to the writer lane.
+
+        Returns:
+            The read-only connection, or None when unavailable.
+        """
+        if self._read_conn is None and not self._read_unavailable:
+            try:
+                with self._lock:
+                    self._ensure_conn()  # database file and tables exist
+            except sqlite3.Error:
+                return None  # writer can't open either; retry next query
+            try:
+                uri = f"file:{quote(os.path.abspath(self._db_path))}?mode=ro"
+                conn = sqlite3.connect(
+                    uri, uri=True, check_same_thread=False, timeout=10.0
+                )
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("SELECT 1 FROM samples LIMIT 1")
+                self._read_conn = conn
+            except sqlite3.Error as e:
+                logger.debug("TimeSeriesStore read-only open failed: %s", e)
+                self._read_unavailable = True
+        return self._read_conn
+
+    @contextmanager
+    def _reader(self) -> Iterator[Callable[[], sqlite3.Connection]]:
+        """Hold a lane for one query and yield a function returning its connection.
+
+        The read lane (read-only connection + its own lock) never takes the
+        writer's RLock, so a long query can't delay recording. Without it
+        (":memory:", or a failed read-only open) this falls back to the
+        writer connection under the writer lock, as before. Yielding an
+        opener keeps open errors inside each caller's ``except
+        sqlite3.Error``.
+        """
+        if not self._read_unavailable:
+            with self._read_lock:
+                conn = self._ensure_read_conn()
+                if conn is not None:
+                    yield lambda: conn
+                    return
+        with self._lock:
+            yield self._ensure_conn
 
     def _ensure_conn(self) -> sqlite3.Connection:
         """Open (lazily) and return the SQLite connection. Caller holds the lock."""
@@ -987,7 +1072,7 @@ class TimeSeriesStore:
             return {**self._signal_series_base(), "enabled": False, "series": []}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(), partial(self._get_signal_series_sync, gateway)
+            self._query_executor(), partial(self._get_signal_series_sync, gateway)
         )
 
     def _signal_series_base(self) -> Dict[str, Any]:
@@ -1010,9 +1095,9 @@ class TimeSeriesStore:
             The get_signal_series() response: catalog keys plus ``series``.
         """
         base = self._signal_series_base()
-        with self._lock:
+        with self._reader() as open_conn:
             try:
-                conn = self._ensure_conn()
+                conn = open_conn()
                 where, params = self._series_filter(gateway, None, None)
                 rows = conn.execute(
                     "SELECT s.series_id, s.gateway_id, s.device, s.metric, "
@@ -1092,7 +1177,7 @@ class TimeSeriesStore:
             }
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(),
+            self._query_executor(),
             partial(
                 self._get_signal_trend_sync,
                 metrics,
@@ -1147,9 +1232,9 @@ class TimeSeriesStore:
             "bucket_seconds": None,
             "series": [],
         }
-        with self._lock:
+        with self._reader() as open_conn:
             try:
-                conn = self._ensure_conn()
+                conn = open_conn()
                 where, params = self._series_filter(gateway, devices, metrics)
                 series_rows = conn.execute(
                     "SELECT series_id, gateway_id, device, metric "
@@ -1344,7 +1429,7 @@ class TimeSeriesStore:
             return {"enabled": False, "days": [], "last_updated": None}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(),
+            self._query_executor(),
             partial(self._get_daily_energy_sync, days, gateway, start_day, end_day),
         )
 
@@ -1355,9 +1440,9 @@ class TimeSeriesStore:
         start_day: Optional[str] = None,
         end_day: Optional[str] = None,
     ) -> Dict[str, Any]:
-        with self._lock:
+        with self._reader() as open_conn:
             try:
-                conn = self._ensure_conn()
+                conn = open_conn()
             except sqlite3.Error as e:
                 logger.debug("TimeSeriesStore query failed: %s", e)
                 return {"enabled": True, "days": [], "last_updated": None}
@@ -1458,7 +1543,7 @@ class TimeSeriesStore:
             return {"enabled": False, "points": [], "count": 0}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(),
+            self._query_executor(),
             partial(self._get_trend_sync, hours, gateway, start, end, fit),
         )
 
@@ -1481,9 +1566,9 @@ class TimeSeriesStore:
         span = max(60.0, end - start)
         # Target ~360 buckets, rounded to a whole minute, never below 60s.
         bucket = max(60.0, round(span / 360.0 / 60.0) * 60.0)
-        with self._lock:
+        with self._reader() as open_conn:
             try:
-                conn = self._ensure_conn()
+                conn = open_conn()
             except sqlite3.Error as e:
                 logger.debug("TimeSeriesStore query failed: %s", e)
                 return {
@@ -1580,7 +1665,7 @@ class TimeSeriesStore:
             return {"enabled": False, "samples": [], "count": 0}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._ensure_executor(),
+            self._query_executor(),
             partial(self._get_samples_sync, gateway, start, end, limit),
         )
 
@@ -1592,9 +1677,9 @@ class TimeSeriesStore:
         limit: int,
     ) -> Dict[str, Any]:
         limit = max(1, min(int(limit), 10_000))
-        with self._lock:
+        with self._reader() as open_conn:
             try:
-                conn = self._ensure_conn()
+                conn = open_conn()
             except sqlite3.Error as e:
                 logger.debug("TimeSeriesStore query failed: %s", e)
                 return {"enabled": True, "samples": [], "count": 0}
@@ -1637,21 +1722,21 @@ class TimeSeriesStore:
                 "gateways": [],
             }
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._ensure_executor(), self._status_sync)
+        return await loop.run_in_executor(self._query_executor(), self._status_sync)
 
     def _status_sync(self) -> Dict[str, Any]:
         db_size = 0
         samples = daily_rows = 0
         device_series = device_samples = device_daily = 0
         gateways: List[str] = []
-        with self._lock:
+        with self._reader() as open_conn:
             if Path(self._db_path).exists():
                 db_size = os.path.getsize(self._db_path)
                 wal = Path(self._db_path + "-wal")
                 if wal.exists():
                     db_size += wal.stat().st_size
                 try:
-                    conn = self._ensure_conn()
+                    conn = open_conn()
                     samples = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
                     daily_rows = conn.execute(
                         "SELECT COUNT(*) FROM daily_energy"
@@ -1811,6 +1896,16 @@ class TimeSeriesStore:
             # cancel_futures: queued writes must not reopen the closed DB
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+        with self._read_lock:
+            if self._read_conn is not None:
+                try:
+                    self._read_conn.close()
+                except sqlite3.Error as e:
+                    logger.debug("TimeSeriesStore read close failed: %s", e)
+                self._read_conn = None
+        if self._read_executor is not None:
+            self._read_executor.shutdown(wait=False, cancel_futures=True)
+            self._read_executor = None
 
 
 # module-level singleton, built lazily from settings (never at import time,
