@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    {PROXY_BASE_SCRIPT}
-    <script src="{PROXY_BASE}/static/js/charts.js"></script>
-    <link rel="stylesheet" href="{PROXY_BASE}/static/css/charts.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {PROXY_BASE_SCRIPT}
+    <script src="{PROXY_BASE}/static/js/charts.js?v={SERVER_VERSION}"></script>
+    <link rel="stylesheet" href="{PROXY_BASE}/static/css/charts.css?v={SERVER_VERSION}">
     <title>History - PyPowerwall Server</title>
     <link rel="icon" type="image/png" sizes="32x32" href="{PROXY_BASE}/favicon-32x32.png">
     <style>
@@ -165,6 +165,7 @@
 
         input[type="date"],
         select {
+            max-width: 100%;
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             border-radius: 6px;
@@ -289,6 +290,10 @@
             color: var(--text-muted);
             align-self: center;
             margin-right: 4px;
+        }
+
+        .card-header .temp-unit {
+            margin-left: auto;
         }
 
         .unit-select {
@@ -490,13 +495,6 @@
                     <option value="">All gateways</option>
                 </select>
             </div>
-            <div class="control-group">
-                <label id="unit-label">Temperature</label>
-                <div class="segmented" id="temp-unit" role="group" aria-labelledby="unit-label">
-                    <button type="button" data-unit="C">°C</button>
-                    <button type="button" data-unit="F">°F</button>
-                </div>
-            </div>
         </div>
 
         <section class="card" aria-labelledby="energy-title">
@@ -583,13 +581,6 @@
         function fmtNum(v, dp) { return v == null || !isFinite(v) ? '--' : v.toFixed(dp); }
         function safeName(s) { return String(s).replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'all'; }
 
-        function deviceShort(device) {
-            // "TEPOD--1707000-11-J--TG1234..." -> "Battery TG1234..."
-            const parts = String(device).split('--');
-            const kind = { TEPOD: 'Battery', TEPINV: 'Inverter', TETHC: 'Powerwall', PVAC: 'Inverter' }[parts[0]] || parts[0];
-            return parts.length > 1 ? `${kind} ${parts[parts.length - 1]}` : String(device);
-        }
-
         function toUnit(v, unit) {
             if (v == null) return v;
             return unit === '°C' && state.unit === 'F' ? v * 9 / 5 + 32 : v;
@@ -631,8 +622,6 @@
         function syncControls() {
             document.querySelectorAll('#range-presets button').forEach(b =>
                 b.setAttribute('aria-pressed', String(b.dataset.range === state.range)));
-            document.querySelectorAll('#temp-unit button').forEach(b =>
-                b.setAttribute('aria-pressed', String(b.dataset.unit === state.unit)));
             $('from-date').value = state.from || '';
             $('to-date').value = state.to || '';
             $('gateway-select').value = state.gateway;
@@ -726,7 +715,7 @@
                 region.style.minHeight = '';
                 window.scrollTo(window.scrollX, y);
                 if (focusCard) {
-                    const card = region.querySelector(`section[aria-labelledby="${focusCard}"]`);
+                    const card = region.querySelector(`section[aria-labelledby="${CSS.escape(focusCard)}"]`);
                     const again = card && Array.from(card.querySelectorAll('button')).find(b => b.textContent === focusText);
                     if (again) again.focus({ preventScroll: true });
                 }
@@ -749,7 +738,7 @@
             const body = document.createElement('div');
             section.append(header, body);
             container.appendChild(section);
-            return { body, note };
+            return { body, note, header };
         }
 
         // ---------------------------------------------------------------
@@ -766,8 +755,12 @@
                 const { start, end } = epochWindow();
                 const tp = new URLSearchParams({ start: String(Math.floor(start)), end: String(Math.ceil(end)) });
                 if (state.gateway) tp.set('gateway', state.gateway);
+                // Its own failure shows in the chart's note; daily totals still render
                 power = getJSON('/api/timeseries/trend?' + tp.toString(), signal)
-                    .then(t => Object.assign(t, { window: { start, end } }));
+                    .then(t => Object.assign(t, { window: { start, end } }), e => {
+                        if (e.name === 'AbortError') throw e;
+                        return { error: e.message };
+                    });
             }
             const data = await getJSON('/api/timeseries/daily?' + p.toString(), signal);
             // Sum gateways per day (one gateway when filtered), oldest first
@@ -782,6 +775,7 @@
         }
 
         function renderEnergyMessage(html) {
+            $('energy-title').textContent = SUBDAY.has(state.range) ? 'Today' : 'Daily energy';
             $('energy-body').innerHTML = `<div class="empty">${html}</div>`;
             $('energy-note').textContent = '';
         }
@@ -794,6 +788,7 @@
             const rows = state.energyDays;
             body.replaceChildren();
             C.prune();
+            $('energy-title').textContent = SUBDAY.has(state.range) ? 'Today' : 'Daily energy';
             const rolling = ROLLING.has(state.range);
             const hasPower = rolling && (state.powerTrend?.points || []).length > 0;
             if (!rows.length && hasPower) {
@@ -808,8 +803,15 @@
             const first = state.from || rows[0].day;
             const last = state.to || rows[rows.length - 1].day;
             const dayCount = Math.round((dayX(last) - dayX(first)) / DAY) + 1;
-            $('energy-note').textContent = SUBDAY.has(state.range)
-                ? 'Today so far · energy is totalled per local day'
+            // One day of totals: title it by the day and skip the tiles that
+            // would only repeat the total (best day, per-day averages)
+            const singleDay = rows.length === 1;
+            if (singleDay) {
+                const day = rows[0].day;
+                $('energy-title').textContent = day === localDay(new Date()) ? 'Today' : fmtDayLong(day);
+            }
+            $('energy-note').textContent = singleDay
+                ? (SUBDAY.has(state.range) ? 'So far today · energy is totalled per local day' : 'kWh for the day')
                 : `${rows.length} of ${dayCount} days recorded · kWh per local day`;
 
             // Range totals
@@ -822,15 +824,15 @@
             const totals = document.createElement('div');
             totals.className = 'totals';
             const tiles = [
-                ['solar', 'Solar generated', `${fmtNum(solar, 1)} kWh`, `${fmtNum(solar / rows.length, 1)} kWh/day average`],
-                ['solar', 'Best solar day', best ? `${fmtNum(best.solar_kwh, 1)} kWh` : '--', best ? fmtDayLong(best.day) : ''],
-                ['home', 'Home used', `${fmtNum(home, 1)} kWh`, `${fmtNum(home / rows.length, 1)} kWh/day average`],
+                ['solar', 'Solar generated', `${fmtNum(solar, 1)} kWh`, singleDay ? '' : `${fmtNum(solar / rows.length, 1)} kWh/day average`],
+                singleDay ? null : ['solar', 'Best solar day', best ? `${fmtNum(best.solar_kwh, 1)} kWh` : '--', best ? fmtDayLong(best.day) : ''],
+                ['home', 'Home used', `${fmtNum(home, 1)} kWh`, singleDay ? '' : `${fmtNum(home / rows.length, 1)} kWh/day average`],
                 ['charge', 'Battery in / out', `${fmtNum(chg, 1)} / ${fmtNum(dchg, 1)}`, 'kWh charged / discharged'],
                 ['import', 'Grid import', `${fmtNum(imp, 1)} kWh`, ''],
                 ['export', 'Grid export', `${fmtNum(exp, 1)} kWh`, ''],
                 ['self', 'Self-powered', selfPowered == null ? '--' : `${fmtNum(selfPowered, 0)}%`, 'of home use not from the grid'],
             ];
-            for (const [cls, label, value, sub] of tiles) {
+            for (const [cls, label, value, sub] of tiles.filter(Boolean)) {
                 const t = document.createElement('div');
                 t.className = `total ${cls}`;
                 t.innerHTML = `<div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub)}</div>`;
@@ -1015,7 +1017,10 @@
             }
             const units = Array.from(byKey.values()).sort((a, b) =>
                 a.gateway.localeCompare(b.gateway) || a.order - b.order || a.label.localeCompare(b.label));
-            for (const u of units) u.title = Array.from(u.devices).map(deviceShort).join(', ');
+            for (const u of units) {
+                const serials = new Set(Array.from(u.devices).map(d => String(d).split('--').pop()));
+                u.title = Array.from(serials).join(', ');
+            }
             return units;
         }
         function unitOf(series, units) {
@@ -1041,13 +1046,17 @@
                 return;
             }
             const units = powerwallUnits(series);
+            if (state.pw !== 'all' && !units.some(u => u.label === state.pw)) {
+                state.pw = 'all';  // e.g. pw=PW9: no such unit
+                writeUrl();
+            }
             for (const group of groups) {
-                const { body, note } = makeCard(wrap, `signal-${group}`, groupInfo(group).label);
-                renderSignalCard(group, body, note, units);
+                const { body, note, header } = makeCard(wrap, `signal-${group}`, groupInfo(group).label);
+                renderSignalCard(group, body, note, units, header);
             }
         }
 
-        function renderSignalCard(group, body, note, allUnits) {
+        function renderSignalCard(group, body, note, allUnits, header) {
             const trend = state.deviceTrend;
             const metricsInfo = catalog().metrics || {};
             const info = groupInfo(group);
@@ -1062,6 +1071,27 @@
             const controls = document.createElement('div');
             controls.className = 'chips';
             body.appendChild(controls);
+
+            // °C / °F only where there are temperatures
+            if (inGroup.some(s => s.unit === '°C')) {
+                const seg = document.createElement('div');
+                seg.className = 'segmented temp-unit';
+                seg.setAttribute('role', 'group');
+                seg.setAttribute('aria-label', 'Temperature unit');
+                for (const [value, label] of [['C', '°C'], ['F', '°F']]) {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.textContent = label;
+                    b.setAttribute('aria-pressed', String(state.unit === value));
+                    b.addEventListener('click', () => {
+                        state.unit = value;
+                        storageSet(UNIT_KEY, value);
+                        renderSignalCards();
+                    });
+                    seg.appendChild(b);
+                }
+                header.insertBefore(seg, note);
+            }
 
             // Powerwall selector: All, or one unit at a time. One choice
             // (pw=) for every card; numbering is the same on every card.
@@ -1135,7 +1165,11 @@
             const inRange = p => !daily || ((!state.from || p.day >= state.from) && (!state.to || p.day <= state.to));
             const series = shown
                 .slice()
-                .sort((a, b) => metricOrder(a.metric) - metricOrder(b.metric))
+                .sort((a, b) => {
+                    const ua = unitOf(a, units), ub = unitOf(b, units);
+                    return ((ua ? units.indexOf(ua) : 1e9) - (ub ? units.indexOf(ub) : 1e9))
+                        || metricOrder(a.metric) - metricOrder(b.metric);
+                })
                 .map(s => {
                     const u = unitOf(s, units);
                     const uIdx = Math.max(0, units.indexOf(u));
@@ -1192,12 +1226,11 @@
             statsWrap.className = 'table-scroll stats-table';
             statsWrap.id = statsId;
             body.appendChild(statsWrap);
-            const lastLabel = daily ? 'Last day' : 'Last step';
             function renderStats() {
                 let html = `<table><caption class="sr-only">${esc(info.label)}: low, average, high and last value for the range</caption>` +
                     `<thead><tr><th>Series<span class="unit-head"> (${esc(unit)})</span></th><th>Low</th>` +
                     `<th title="Weighted by sample count">Average</th><th>High</th>` +
-                    `<th title="${daily ? "Average of the last day" : "Average of the last step"}">${lastLabel}</th></tr></thead><tbody>`;
+                    `<th title="${daily ? "Average of the last day" : "Average of the last step"}">Last</th></tr></thead><tbody>`;
                 const u = `<span class="unit"> ${esc(unit)}</span>`;
                 let any = false;
                 for (const s of series) {
@@ -1217,7 +1250,7 @@
                         `<td title="${esc(cfg.formatX(loX))}">${fmtNum(lo, dp)}${u}</td>` +
                         `<td>${fmtNum(total / weight, dp)}${u}</td>` +
                         `<td title="${esc(cfg.formatX(hiX))}">${fmtNum(hi, dp)}${u}</td>` +
-                        `<td>${fmtNum(pts[pts.length - 1].y, dp)}${u}</td></tr>`;
+                        `<td title="${esc(cfg.formatX(pts[pts.length - 1].x))}">${fmtNum(pts[pts.length - 1].y, dp)}${u}</td></tr>`;
                 }
                 statsWrap.innerHTML = any ? html + '</tbody></table>' : '';
             }
@@ -1247,7 +1280,10 @@
                 const ids = new Set([...Object.keys(names), ...(status.gateways || [])]);
                 for (const id of ids) state.gatewayNames[id] = names[id] || id;
                 const sel = $('gateway-select');
-                if (ids.size > 1 || (state.gateway && !ids.has(state.gateway))) {
+                if (ids.size && state.gateway && !ids.has(state.gateway)) {
+                    state.gateway = '';  // unknown gateway= : show all gateways
+                }
+                if (ids.size > 1) {
                     for (const id of ids) {
                         const o = document.createElement('option');
                         o.value = id;
@@ -1332,12 +1368,6 @@
             state.pw = 'all';
             reload(true);
         });
-        document.querySelectorAll('#temp-unit button').forEach(b => b.addEventListener('click', () => {
-            state.unit = b.dataset.unit;
-            storageSet(UNIT_KEY, state.unit);
-            syncControls();
-            renderSignalCards();
-        }));
 
         // Refresh while the range includes today: every minute for the 1h/6h
         // views (so new samples show up), every 5 minutes otherwise

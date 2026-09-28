@@ -605,6 +605,9 @@ async def console():
             )
         content = content.replace("{PROXY_BASE_SCRIPT}", proxy_base_script)
         content = content.replace("{PROXY_BASE}", _proxy_base)
+        # Shared static assets carry ?v=<version> so an upgrade isn't served
+        # a stale cached charts.js / charts.css
+        content = content.replace("{SERVER_VERSION}", SERVER_VERSION)
         return HTMLResponse(content=content)
     b = _proxy_base
     return HTMLResponse(
@@ -656,6 +659,7 @@ async def history():
     content = page_path.read_text()
     content = content.replace("{PROXY_BASE_SCRIPT}", _proxy_base_script())
     content = content.replace("{PROXY_BASE}", _proxy_base)
+    content = content.replace("{SERVER_VERSION}", SERVER_VERSION)
     return HTMLResponse(content=content)
 
 

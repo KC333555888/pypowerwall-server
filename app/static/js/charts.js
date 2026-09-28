@@ -2,7 +2,7 @@
  * PWCharts - canvas charts shared by the Console (index.html) and the
  * History page (history.html), so a chart fix lands once.
  *
- *   PWCharts.energyTrend(container, opts) -> { setData, redraw, destroy, note, hidden }
+ *   PWCharts.energyTrend(container, opts) -> { setData, note }
  *       The Energy Trend: solar / home / battery / grid kW (left axis,
  *       translucent fill to zero) plus battery level % (dashed, fixed
  *       0-100 % right axis), legend toggles, hover crosshair + tooltip and a
@@ -31,6 +31,12 @@
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
     const pad = n => String(n).padStart(2, '0');
+    // Axis label on the 12-hour clock: "1p", "1:30p"
+    function fmt12h(d) {
+        const h = d.getHours();
+        const m = d.getMinutes();
+        return `${h % 12 || 12}${m ? ':' + pad(m) : ''}${h >= 12 ? 'p' : 'a'}`;
+    }
     function parseDay(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }
     // Day strings are placed at UTC noon so day-axis labels never shift by timezone
     function dayX(s) { const [y, m, d] = s.split('-').map(Number); return Date.UTC(y, m - 1, d) / 1000 + DAY / 2; }
@@ -39,17 +45,12 @@
         const d = parseDay(s);
         return `${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
     }
+    // 12-hour clock everywhere, like the Console: "Sep 27, 1:30pm"
     function fmtTimeLong(ts, withSeconds) {
         const d = new Date(ts * 1000);
         const secs = withSeconds ? `:${pad(d.getSeconds())}` : '';
-        return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}${secs}`;
+        return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getHours() % 12 || 12}:${pad(d.getMinutes())}${secs}${d.getHours() >= 12 ? 'pm' : 'am'}`;
     }
-    function fmt12h(d) {
-        const h = d.getHours();
-        const m = d.getMinutes();
-        return `${h % 12 || 12}${m ? ':' + pad(m) : ''}${h >= 12 ? 'p' : 'a'}`;
-    }
-
     function niceStep(range, target) {
         const raw = range / Math.max(1, target);
         const mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -93,7 +94,7 @@
                 x: t.x,
                 label: t.step >= DAY || midnight
                     ? `${MONTHS[d.getMonth()]} ${d.getDate()}`
-                    : `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+                    : fmt12h(d),
             };
         });
     }
@@ -606,7 +607,6 @@
 
         return {
             note,
-            hidden,
             setData(newPoints, newDomain) {
                 points = newPoints && newPoints.length ? newPoints : null;
                 domain = newDomain || null;
@@ -615,18 +615,13 @@
                 updateTooltip();
                 updateSummary();
             },
-            redraw: draw,
-            destroy() {
-                registry.delete(canvas);
-                container.replaceChildren();
-            },
         };
     }
 
+    // Only what the Console and History pages use
     window.PWCharts = {
-        DAY, MONTHS, WEEKDAYS, TREND_SERIES,
+        DAY, TREND_SERIES,
         esc, pad, parseDay, dayX, xDay, fmtDayLong, fmtTimeLong,
-        niceStep, xTicks, drawChart, attachHover, makeChart,
-        energyTrend, redrawAll, prune,
+        makeChart, drawChart, energyTrend, prune,
     };
 })();

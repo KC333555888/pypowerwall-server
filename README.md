@@ -352,9 +352,10 @@ samples kept for `PW_TIMESERIES_RETENTION`.
 Below it the page draws **one chart card per signal group** (Powerwall
 temperatures, Fan speed, Fan duty cycle), built entirely from the catalog
 at `/api/timeseries/signals`: a new metric, or a whole new group, appears
-with no page changes. Cards have a °C/°F switch (for °C series), **Show**
-toggles when a group has several metrics, and low/average/high for the
-range (the average is weighted by sample count). With more than one
+with no page changes. Each card shows **Show** toggles when a group has
+several metrics, and low / average / high / last values for the range (the
+average is weighted by sample count; hover a value for its time). The
+temperature card has its own °C/°F switch in its header. With more than one
 Powerwall, an **All / PW1 / PW2 …** selector shows one unit at a time, or
 all of them told apart by line style. Units are numbered by the server
 exactly as the Console and `/pod` number them (battery-list order, with
