@@ -371,40 +371,38 @@ class Settings(BaseSettings):
 
 ### 6. History and Time-Series Data
 
-The time-series store (`app/core/timeseries.py`), the `/api/timeseries/*`
-routes and the History page (`/history`) are expected to grow. New history
-and time-series work follows these principles:
+The time-series store and the history UI are expected to grow over time: new
+signals, new charts, new device types. To keep that growth cheap and the server
+simple, history features follow these rules:
 
-1. **Record a curated set in code.** What gets recorded is a signal registry
-   plus a metric catalog in code (`SIGNAL_METRICS`: one entry per metric
-   with its source signals, label, unit, group and order; `SIGNAL_GROUPS`
-   for chart groups), added through reviewed PRs. Environment variables
-   cover only what the operator pays for: sample interval, retention and
-   off (`PW_TIMESERIES_*`), since those drive disk use and SD-card wear.
-   There are no per-signal toggles. Viewing choices (series shown,
-   Powerwall selected, range) live in the UI, in the URL and browser
-   storage, never in server config.
-2. **The UI is driven by the catalog.** The page draws one chart card per
-   catalog group with recorded data, takes labels, units, order, decimals
-   and axis rules from the catalog, and assigns colors from a palette by
-   order. A new metric, or a new chart group, appears with no page edits.
-3. **History pages are a zero-setup quick look, not a dashboard builder.**
-   Custom dashboards, alerts and long-term analytics belong in
-   Powerwall-Dashboard (Grafana/InfluxDB) and Home Assistant. Keeping the
-   server simple is what lets it complement them.
-4. **Recording adds no gateway calls, keeps database work off the event
-   loop, and never fails a poll.** Samples come from data the poll already
-   fetched. SQLite reads and writes run on the store's worker thread with
-   a timeout, reads are bounded so they can't starve writes, and storage
-   errors are counted and logged, never raised into polling.
-5. **Setting and API names are permanent once released.** Environment
-   variables, routes, response fields and stored metric ids can't change
-   later without breaking someone (no breaking changes), so they are chosen
-   deliberately before release; a pre-release rename migrates stored rows.
-6. **Shared chart code lives in one shared static script.** Charts used by
-   more than one page (for example the Energy Trend on the Console and
-   History pages) live in `app/static/js/charts.js` (`window.PWCharts`)
-   with their styles in `app/static/css/charts.css`, so a fix lands once.
+1. **Record a curated set in code; choose views in the UI.**
+   - **What is recorded** is defined in code: a registry that maps a pypowerwall
+     signal to a metric id, plus a catalog with each metric's label, unit and
+     chart group. It is extended through reviewed PRs.
+   - **Environment variables cover only what the operator pays for:** sample
+     interval, retention, and turning recording off. They drive disk use and
+     SD-card wear on small hosts. No per-signal environment toggles.
+   - **What a user sees is a viewing choice made in the page:** series and chart
+     toggles kept in the URL and remembered in browser storage. No server-side
+     view configuration.
+2. **The UI is driven by the metric catalog.** Adding a metric, including one in a
+   new chart group, must appear in the UI without editing the page. That means one
+   chart card per catalog group, with colors assigned from a palette rather than
+   hard-coded per metric.
+3. **History pages are a zero-setup quick look, not a dashboard builder.** Custom
+   dashboards, alerting and long-term analytics belong in Powerwall-Dashboard
+   (Grafana/InfluxDB) and Home Assistant, which consume the server's APIs and
+   MQTT topics.
+4. **Recording never adds gateway calls or blocks polling.** Samples come from data
+   each poll already fetches. Database writes and queries run off the event
+   loop, and a recording failure never fails a poll.
+5. **Setting and API names are permanent once released.** Environment variables,
+   endpoint paths and response fields follow the no-breaking-changes rule, so
+   they are chosen deliberately before merge. New data is added to responses;
+   existing fields are never renamed or removed.
+6. **Shared UI code lives in one place.** Charts and helpers used by more than one
+   page (for example the Energy Trend chart) belong in a shared static script
+   that each page loads, not in copies per page.
 
 ---
 

@@ -194,29 +194,18 @@ async def get_aggregates():
 
 ### 8. History and Time-Series Extensions
 
-When adding to the time-series store, `/api/timeseries/*` or `/history`,
-follow the principles in [DESIGN.md → Key Design Patterns → 6. History and
-Time-Series Data](DESIGN.md#6-history-and-time-series-data):
+Follow DESIGN.md "History and Time-Series Data" when adding recorded signals or
+history UI:
 
-1. **New signal = one registry entry.** Add it to `SIGNAL_METRICS` (and to
-   `SIGNAL_GROUPS` for a new chart group) in `app/core/timeseries.py`. Don't
-   add per-signal environment variables; settings are only interval,
-   retention and off. Keep viewing choices in the page (URL / browser
-   storage), not in server config.
-2. **Don't hard-code metrics or groups in the page.** `history.html` builds
-   its cards, labels, colors, order and decimals from the
-   `/api/timeseries/signals` catalog (a test enforces this).
-3. **Keep it a quick look.** Don't build custom dashboards, alerts or
-   analytics into the server; point users to Powerwall-Dashboard or Home
-   Assistant.
-4. **Record from data the poll already has.** No extra gateway calls, all
-   SQLite work through the store's executor with a timeout, bounded reads,
-   and storage errors logged and swallowed, never raised into polling.
-5. **Treat names as permanent.** Settings, routes, response fields and
-   metric ids can't change after release. Choose them before merge, and
-   migrate stored rows for any pre-release rename.
-6. **Put shared chart code in `app/static/js/charts.js`** (styles in
-   `app/static/css/charts.css`), never copied between pages.
+- Add a signal by extending the code registry and metric catalog. Don't add an
+  environment variable per signal; environment variables only control interval,
+  retention and on/off.
+- The history page must render new metrics and new chart groups from the
+  catalog, with no page edits. Viewing choices live in the URL and browser
+  storage.
+- Record from data the poll already has (no extra gateway calls), keep database
+  work off the event loop, and never let recording break a poll.
+- Put shared chart code in a shared static script, not a copy per page.
 
 ## Configuration
 
