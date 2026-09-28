@@ -1591,6 +1591,11 @@ class GatewayManager:
         per PW_TIMESERIES_SIGNAL_INTERVAL, so most calls return immediately.
         Like power samples, failures are logged and swallowed and a hung
         write is capped by a timeout.
+
+        Args:
+            gateway_id: Gateway identifier.
+            gateway: Gateway config (its timezone keys the daily rollups).
+            data: This poll's data (vitals, fan_speeds, timestamp).
         """
         try:
             from app.core.timeseries import (

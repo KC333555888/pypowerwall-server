@@ -229,9 +229,6 @@ SIGNAL_METRICS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Metric ids renamed before release; existing rows are migrated on open.
-_RENAMED_METRICS: Dict[str, str] = {"ambient_temp": "controller_ambient"}
-
 # Derived lookup used when recording: signal name -> metric id.
 _SIGNAL_TO_METRIC: Dict[str, str] = {
     signal: metric
@@ -250,7 +247,7 @@ SIGNAL_MIN_INTERVAL = 30
 
 # Longest window (seconds) served from raw device samples; longer ranges
 # read the daily min/avg/max rollups instead.
-DEVICE_RAW_MAX_SPAN = 14 * 86400.0
+SIGNAL_RAW_MAX_SPAN = 14 * 86400.0
 
 # Most raw sample rows one signal-trend query may scan. Queries hold the
 # store's lock and its single worker thread, so an unbounded raw read would
@@ -435,9 +432,8 @@ class TimeSeriesStore:
         # In-memory cache of the last integrated sample per gateway:
         # {gateway_id: {"ts": float, "values": {category: watts}}}
         self._state: Dict[str, Dict[str, Any]] = {}
-        # Last device-signal sample time per gateway (interval gating) and
-        # (gateway, device, metric) -> series_id lookups.
-        # Last recorded ts per series (gateway, device, metric)
+        # Last recorded ts per series (gateway, device, metric), for interval
+        # gating, and the (gateway, device, metric) -> series_id cache.
         self._signal_last: Dict[Tuple[str, str, str], float] = {}
         self._series_ids: Dict[Tuple[str, str, str], int] = {}
 
@@ -568,13 +564,6 @@ class TimeSeriesStore:
                     grid_export_w REAL NOT NULL DEFAULT 0
                 );
                 """)
-            # Metric ids renamed before release: keep already-recorded rows
-            # (an id already present under the new name keeps its own rows)
-            for old, new in _RENAMED_METRICS.items():
-                conn.execute(
-                    "UPDATE OR IGNORE device_series SET metric=? WHERE metric=?",
-                    (new, old),
-                )
             conn.commit()
             self._conn = conn
             logger.debug("TimeSeriesStore opened %s (WAL mode)", self._db_path)
@@ -879,15 +868,25 @@ class TimeSeriesStore:
         device: str,
         metric: str,
     ) -> int:
-        """Look up (creating if needed) the series id. Caller holds the lock."""
+        """Look up (creating if needed) the series id. Caller holds the lock.
+
+        Args:
+            conn: Writer connection.
+            gateway_id: Gateway identifier.
+            device: Device block key (e.g. ``TEPOD--<din>``).
+            metric: Metric id from SIGNAL_METRICS.
+
+        Returns:
+            The ``device_series.series_id`` for (gateway, device, metric).
+            Units are not stored per series; they come from SIGNAL_METRICS.
+        """
         key = (gateway_id, device, metric)
         series_id = self._series_ids.get(key)
         if series_id is None:
-            unit = SIGNAL_METRICS.get(metric, {}).get("unit")
             conn.execute(
                 "INSERT OR IGNORE INTO device_series "
-                "(gateway_id, device, metric, unit) VALUES (?,?,?,?)",
-                (gateway_id, device, metric, unit),
+                "(gateway_id, device, metric) VALUES (?,?,?)",
+                key,
             )
             series_id = conn.execute(
                 "SELECT series_id FROM device_series "
@@ -904,6 +903,20 @@ class TimeSeriesStore:
         metrics: Dict[Tuple[str, str], float],
         timezone: Optional[str],
     ) -> bool:
+        """Write one gated signal snapshot and fold it into the daily rollups.
+
+        Runs on the store's writer thread; storage errors are counted in
+        ``write_failures`` and never raised into polling.
+
+        Args:
+            gateway_id: Gateway identifier.
+            ts: Unix timestamp of the poll.
+            metrics: {(device block, metric id): value} that passed gating.
+            timezone: Gateway timezone name, for the rollup's local day.
+
+        Returns:
+            True when the snapshot was stored.
+        """
         with self._lock:
             try:
                 conn = self._ensure_conn()
@@ -988,6 +1001,14 @@ class TimeSeriesStore:
         }
 
     def _get_signal_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
+        """List recorded signal series with their raw and daily coverage.
+
+        Args:
+            gateway: Restrict to one gateway ID (None = all gateways).
+
+        Returns:
+            The get_signal_series() response: catalog keys plus ``series``.
+        """
         base = self._signal_series_base()
         with self._lock:
             try:
@@ -995,7 +1016,6 @@ class TimeSeriesStore:
                 where, params = self._series_filter(gateway, None, None)
                 rows = conn.execute(
                     "SELECT s.series_id, s.gateway_id, s.device, s.metric, "
-                    "s.unit, "
                     "(SELECT MIN(ts) FROM device_samples d "
                     "WHERE d.series_id=s.series_id) AS first_ts, "
                     "(SELECT MAX(ts) FROM device_samples d "
@@ -1016,7 +1036,7 @@ class TimeSeriesStore:
                 "gateway": row["gateway_id"],
                 "device": row["device"],
                 "metric": row["metric"],
-                "unit": row["unit"],
+                "unit": SIGNAL_METRICS.get(row["metric"], {}).get("unit"),
                 "label": SIGNAL_METRICS.get(row["metric"], {}).get(
                     "label", row["metric"]
                 ),
@@ -1097,6 +1117,21 @@ class TimeSeriesStore:
         resolution: str,
         timezones: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
+        """Signal history for charting (see get_signal_trend()).
+
+        Args:
+            metrics: Metric ids to include (None = all).
+            gateway: Restrict to one gateway ID.
+            devices: Restrict to these device blocks.
+            start: Window start (epoch seconds); default end - hours.
+            end: Window end (epoch seconds); default now.
+            hours: Window length when no explicit start.
+            resolution: "auto", "raw" or "daily".
+            timezones: Gateway ID -> timezone name for local-day rollups.
+
+        Returns:
+            ``{enabled, start, end, resolution, bucket_seconds, series}``.
+        """
         timezones = timezones or {}
         now = time.time()
         end = float(end) if end is not None else now + 300.0
@@ -1117,7 +1152,7 @@ class TimeSeriesStore:
                 conn = self._ensure_conn()
                 where, params = self._series_filter(gateway, devices, metrics)
                 series_rows = conn.execute(
-                    "SELECT series_id, gateway_id, device, metric, unit "
+                    "SELECT series_id, gateway_id, device, metric "
                     f"FROM device_series{where} "
                     "ORDER BY gateway_id, device, metric",
                     params,
@@ -1137,7 +1172,7 @@ class TimeSeriesStore:
                 # Estimated raw rows: series x samples per series in the window
                 raw_rows = len(ids) * span / max(1, self._signal_interval)
                 if resolution == "raw" and (
-                    span > DEVICE_RAW_MAX_SPAN or raw_rows > SIGNAL_RAW_MAX_ROWS
+                    span > SIGNAL_RAW_MAX_SPAN or raw_rows > SIGNAL_RAW_MAX_ROWS
                 ):
                     resolution = "daily"  # bounded: never scan unbounded raw
                 elif resolution not in ("raw", "daily"):
@@ -1222,7 +1257,7 @@ class TimeSeriesStore:
                 "gateway": row["gateway_id"],
                 "device": row["device"],
                 "metric": row["metric"],
-                "unit": row["unit"],
+                "unit": SIGNAL_METRICS.get(row["metric"], {}).get("unit"),
                 "label": SIGNAL_METRICS.get(row["metric"], {}).get(
                     "label", row["metric"]
                 ),
@@ -1247,8 +1282,18 @@ class TimeSeriesStore:
         its first hour at full detail, not as one daily point). Daily rows
         are keyed by gateway-local day, so "older" is judged per gateway in
         its own timezone.
+
+        Args:
+            conn: Database connection.
+            by_gateway: Gateway ID -> series ids in the query.
+            zones: Gateway ID -> timezone for its local days.
+            start: Window start (epoch seconds).
+            span: Window length in seconds.
+
+        Returns:
+            "raw" or "daily".
         """
-        if span > DEVICE_RAW_MAX_SPAN:
+        if span > SIGNAL_RAW_MAX_SPAN:
             return "daily"
         oldest_all: Optional[float] = None
         older_daily = False
@@ -1716,12 +1761,16 @@ class TimeSeriesStore:
                     conn.execute(
                         "DELETE FROM device_samples WHERE ts < ?", (int(cutoff),)
                     )
-                # Series with nothing left in either table
-                conn.execute(
+                # Series with nothing left in either table. Their ids may be
+                # cached: drop the cache so a later sample recreates the series
+                # instead of writing under a deleted id.
+                cur = conn.execute(
                     "DELETE FROM device_series WHERE series_id NOT IN "
                     "(SELECT series_id FROM device_samples) AND series_id NOT IN "
                     "(SELECT series_id FROM device_daily)"
                 )
+                if cur.rowcount:
+                    self._series_ids.clear()
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except sqlite3.Error as e:

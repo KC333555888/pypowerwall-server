@@ -455,27 +455,23 @@ class TestDeviceTimezones:
         assert body["resolution"] == "raw"
 
 
-class TestMetricRename:
+class TestSeriesCache:
     @pytest.mark.asyncio
-    async def test_old_metric_id_is_migrated(self, tmp_path):
-        import sqlite3
-
-        db = tmp_path / "ts.db"
-        store = TimeSeriesStore(db_path=str(db))
-        await store.record_signal_sample(
-            "gw1",
-            time.time(),
-            {("TETHC--2012170-25-E--TG1", "controller_ambient"): 21.0},
-        )
+    async def test_samples_survive_series_pruning(self, tmp_path):
+        """A series pruned away is recreated, not written under a dead id."""
+        store = store_for(tmp_path, signal_retention="90s", signal_interval="60s")
+        now = time.time()
+        metrics = {(POD, "pack_temp_max"): 30.0}
+        await store.record_signal_sample("gw1", now - 7200, metrics, timezone="UTC")
+        # Drop the daily rollup too so the whole series is removed
+        store._ensure_conn().execute("DELETE FROM device_daily")
+        store._maintenance_sync()
+        assert (await store.status())["signal_series"] == 0
+        await store.record_signal_sample("gw1", now, metrics, timezone="UTC")
+        series = (await store.get_signal_series())["series"]
+        assert [s["metric"] for s in series] == ["pack_temp_max"]
+        assert (await store.status())["signal_samples"] == 1
         await store.stop()
-        conn = sqlite3.connect(db)
-        conn.execute("UPDATE device_series SET metric='ambient_temp'")
-        conn.commit()
-        conn.close()
-        reopened = TimeSeriesStore(db_path=str(db))
-        series = (await reopened.get_signal_series())["series"]
-        assert [s["metric"] for s in series] == ["controller_ambient"]
-        await reopened.stop()
 
 
 class TestPowerwallNumbering:
@@ -993,3 +989,124 @@ class TestFailurePaths:
         groups = {s["metric"] for s in info["series"]}
         assert groups and all("fan" in m for m in groups)  # fans only
         ts_mod.reset_timeseries_store()
+
+
+class TestReviewCoverage:
+    """Guards for changes the earlier tests wouldn't have caught."""
+
+    def test_daily_reversed_range_is_422(self, client):
+        resp = client.get("/api/timeseries/daily?start=2026-03-10&end=2026-03-01")
+        assert resp.status_code == 422
+        assert resp.json()["detail"][0]["loc"] == ["query", "start"]
+
+    def test_status_reports_gateway_names(self, client, mock_gateway_manager):
+        from app.models.gateway import Gateway
+
+        gw = Gateway(id="gw1", name="Home", host="1.2.3.4", gw_pwd="x")
+        mock_gateway_manager.gateways["gw1"] = gw
+        assert client.get("/api/timeseries/status").json()["gateway_names"] == {
+            "gw1": "Home"
+        }
+
+    def test_vitals_preserved_is_set_and_cleared(self, mock_gateway_manager):
+        from app.models.gateway import PowerwallData
+
+        config = {"battery_blocks": [{"vin": "A--TG1"}, {"vin": "B--TG2"}]}
+        full = PowerwallData(
+            vitals={"TEPINV--A--TG1": {}, "TEPINV--B--TG2": {}},
+            tedapi_config=config,
+        )
+        mock_gateway_manager._last_successful_data["gw1"] = full
+        partial = PowerwallData(vitals={"TEPINV--A--TG1": {}}, tedapi_config=config)
+        mock_gateway_manager._preserve_complete_multi_pw_snapshot("gw1", partial)
+        assert "gw1" in mock_gateway_manager._vitals_preserved
+        complete = PowerwallData(
+            vitals={"TEPINV--A--TG1": {}, "TEPINV--B--TG2": {}},
+            tedapi_config=config,
+        )
+        mock_gateway_manager._preserve_complete_multi_pw_snapshot("gw1", complete)
+        assert "gw1" not in mock_gateway_manager._vitals_preserved
+
+    @pytest.mark.asyncio
+    async def test_poll_passes_gateway_timezone(
+        self, tmp_path, monkeypatch, mock_gateway_manager
+    ):
+        import app.core.timeseries as ts_mod
+        from app.config import settings
+        from app.models.gateway import Gateway, PowerwallData
+
+        monkeypatch.setattr(settings, "timeseries_path", str(tmp_path / "tz.db"))
+        ts_mod.reset_timeseries_store()
+        store = ts_mod.get_timeseries_store()
+        seen = {}
+
+        async def capture(gateway_id, ts, metrics, timezone=None):
+            seen["timezone"] = timezone
+            return True
+
+        monkeypatch.setattr(store, "record_signal_sample", capture)
+        gw = Gateway(
+            id="gw1", name="G", host="1.2.3.4", gw_pwd="x", timezone="Asia/Tokyo"
+        )
+        data = PowerwallData(vitals=PW3_VITALS, timestamp=time.time())
+        await mock_gateway_manager._record_signal_sample("gw1", gw, data)
+        assert seen["timezone"] == "Asia/Tokyo"
+        ts_mod.reset_timeseries_store()
+
+    def test_signal_trend_passes_timezones(
+        self, client, monkeypatch, mock_gateway_manager
+    ):
+        import app.api.timeseries as api
+        from app.models.gateway import Gateway
+
+        mock_gateway_manager.gateways["gw1"] = Gateway(
+            id="gw1", name="G", host="1.2.3.4", gw_pwd="x", timezone="Asia/Tokyo"
+        )
+        seen = {}
+
+        class Store:
+            async def get_signal_trend(self, **kwargs):
+                seen.update(kwargs)
+                return {"enabled": True, "series": []}
+
+        monkeypatch.setattr(api, "get_timeseries_store", lambda: Store())
+        assert client.get("/api/timeseries/signal_trend").status_code == 200
+        assert seen["timezones"]["gw1"] == "Asia/Tokyo"
+
+    @pytest.mark.asyncio
+    async def test_ranged_daily_not_trimmed(self, tmp_path):
+        store = store_for(tmp_path)
+        base = time.time() - 12 * 86400
+        for i in range(10):
+            t = base + i * 86400
+            await store.record_sample("gw1", t, 1000, 500, 0, -500, timezone="UTC")
+            await store.record_sample("gw1", t + 60, 1000, 500, 0, -500, timezone="UTC")
+        from datetime import datetime, timezone
+
+        day = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")
+        body = await store.get_daily_energy(
+            start_day=day(base), end_day=day(base + 9 * 86400)
+        )
+        assert len(body["days"]) == 10  # a range isn't cut to the default 7
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_daily_trend_capped_at_now(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        # A sample stamped two days ahead (clock skew) must not show up
+        await store.record_signal_sample(
+            "gw1", now + 2 * 86400, {(POD, "pack_temp_max"): 99.0}, timezone="UTC"
+        )
+        await store.record_signal_sample(
+            "gw1", now - 86400, {(POD, "pack_temp_max"): 30.0}, timezone="UTC"
+        )
+        body = await store.get_signal_trend(
+            start=now - 3 * 86400,
+            end=now + 5 * 86400,
+            resolution="daily",
+            timezones={"gw1": "UTC"},
+        )
+        values = [p["avg"] for p in body["series"][0]["points"]]
+        assert 99.0 not in values and 30.0 in values
+        await store.stop()

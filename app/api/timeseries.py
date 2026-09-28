@@ -66,7 +66,15 @@ _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _query_error(name: str, msg: str) -> RequestValidationError:
-    """A 422 in FastAPI's standard validation-error shape for a query param."""
+    """A 422 in FastAPI's standard validation-error shape for a query param.
+
+    Args:
+        name: Query parameter name, reported in ``loc``.
+        msg: Human-readable reason.
+
+    Returns:
+        The exception to raise.
+    """
     return RequestValidationError(
         [{"loc": ("query", name), "msg": msg, "type": "value_error"}]
     )
@@ -77,6 +85,13 @@ def _check_day(value: Optional[str], name: str) -> Optional[str]:
 
     Raises 422 on bad input, including well-formed but impossible dates
     such as 2026-02-30 (they would otherwise silently match nothing).
+
+    Args:
+        value: The raw query value (None when absent).
+        name: Query parameter name, for the error.
+
+    Returns:
+        The value unchanged when valid.
     """
     if value is None:
         return value
@@ -279,7 +294,9 @@ async def get_status():
 
 
 @router.get("/signals")
-async def get_devices(gateway: Optional[str] = Query(default=None)):
+async def get_signals(
+    gateway: Optional[str] = Query(default=None),
+) -> Dict[str, Any]:
     """Recorded Powerwall temperature and fan series.
 
     One entry per (gateway, device block, metric) with the time range of
@@ -288,7 +305,6 @@ async def get_devices(gateway: Optional[str] = Query(default=None)):
     units and chart groups (temperature, fan_speed, fan_duty).
     """
     result = await get_timeseries_store().get_signal_series(gateway=gateway)
-    result["gateways"] = _gateway_names()
     return _annotate_powerwalls(result)
 
 
@@ -305,13 +321,26 @@ async def get_signal_trend(
     end: Optional[float] = _epoch_query("Window end, epoch seconds"),
     hours: int = Query(default=24, ge=1, le=24 * 3660),
     resolution: str = Query(default="auto", pattern="^(auto|raw|daily)$"),
-):
+) -> Dict[str, Any]:
     """Powerwall temperature / fan history, one point list per series.
 
-    Each point has ``avg``, ``min`` and ``max``. ``raw`` resolution buckets
-    the stored samples into ~360 points; ``daily`` returns one point per
-    stored local day (with ``day``). ``auto`` picks raw for windows up to 14
-    days still covered by raw retention, else daily.
+    Each point has ``avg``, ``min``, ``max`` and sample count ``n``. ``raw``
+    resolution buckets the stored samples into ~360 points; ``daily`` returns
+    one point per stored local day (with ``day``). ``auto`` picks raw for
+    windows up to 14 days still covered by raw retention, else daily; raw
+    reads are served as daily beyond 14 days or ~500k rows.
+
+    Args:
+        metrics: Comma-separated metric ids (default all).
+        gateway: Restrict to one gateway ID.
+        devices: Comma-separated device blocks.
+        start: Window start, epoch seconds (0..2100-01-01).
+        end: Window end, epoch seconds (0..2100-01-01).
+        hours: Window length when no start is given.
+        resolution: "auto", "raw" or "daily".
+
+    Returns:
+        Series with ``powerwall`` labels and their points.
     """
     result = await get_timeseries_store().get_signal_trend(
         metrics=_split(metrics),
