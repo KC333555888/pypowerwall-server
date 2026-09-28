@@ -5,7 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PyPowerwall Server</title>
-    <script src="{PROXY_BASE}/static/js/energy-trend.js"></script>
+    <script src="{PROXY_BASE}/static/js/charts.js"></script>
+    <link rel="stylesheet" href="{PROXY_BASE}/static/css/charts.css">
     <style>
         * {
             margin: 0;
@@ -277,78 +278,21 @@
             font-size: 0.8em;
             color: var(--text-secondary);
         }
-        .energy-trend-legend {
+        /* The shared Energy Trend (charts.css) fills the rest of the card */
+        #energy-trend-host {
+            flex: 1 1 auto;
+            min-height: 0;
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column;
+        }
+        #energy-trend-host .energy-trend-legend,
+        #energy-trend-host .energy-trend-note {
             flex-shrink: 0;
-            gap: 6px 16px;
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
         }
-        .energy-trend-legend .key {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            user-select: none;
-            transition: opacity 0.15s ease;
-            /* button reset — keys are <button> for keyboard access, styled as plain text */
-            border: 0;
-            background: none;
-            padding: 0;
-            font: inherit;
-            color: inherit;
-        }
-        .energy-trend-legend .key:focus-visible {
-            outline: 1px solid #58a6ff;
-            outline-offset: 2px;
-            border-radius: 3px;
-        }
-        .energy-trend-legend .key.off {
-            opacity: 0.35;
-        }
-        #energy-trend-tooltip {
-            position: absolute;
-            display: none;
-            background: rgba(13, 17, 23, 0.95);
-            border: 1px solid rgba(139, 148, 158, 0.4);
-            border-radius: 6px;
-            padding: 6px 9px;
-            font-size: 11px;
-            line-height: 1.6;
-            color: var(--text-color, #c9d1d9);
-            pointer-events: none;
-            z-index: 5;
-            white-space: nowrap;
-        }
-        #energy-trend-tooltip .tt-time {
-            font-weight: 600;
-            margin-bottom: 2px;
-        }
-        #energy-trend-tooltip .tt-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            margin-right: 6px;
-            vertical-align: middle;
-        }
-        .energy-trend-legend .swatch {
-            display: inline-block;
-            width: 16px;
-            height: 3px;
-            border-radius: 2px;
-        }
-        .energy-trend-legend .swatch.dashed {
-            background: repeating-linear-gradient(90deg, var(--battery-color) 0 5px, transparent 5px 9px);
-        }
-        #energy-trend-chart {
-            width: 100%;
+        #energy-trend-host .energy-trend-chart {
             flex: 1 1 auto;
             min-height: 140px;
             height: auto;
-            display: block;
         }
         .energy-trend-ranges {
             display: flex;
@@ -373,13 +317,6 @@
             color: var(--text-primary, #e6edf3);
             border-color: var(--text-secondary);
             background: rgba(139, 148, 158, 0.2);
-        }
-        .energy-trend-note {
-            flex-shrink: 0;
-            font-size: 0.8em;
-            color: var(--text-muted);
-            margin-top: 6px;
-            min-height: 1em;
         }
         
         .energy-grid {
@@ -1972,16 +1909,8 @@
                         <button data-range="day">Day</button>
                         <button data-range="fit">Fit</button>
                     </div>
-                    <div class="energy-trend-legend">
-                        <button type="button" class="key" data-series="solar_kw"><span class="swatch" style="background: var(--solar-color)"></span>Solar kW</button>
-                        <button type="button" class="key" data-series="home_kw"><span class="swatch" style="background: var(--home-color)"></span>Home kW</button>
-                        <button type="button" class="key" data-series="battery_kw"><span class="swatch" style="background: var(--battery-color)"></span>Battery kW</button>
-                        <button type="button" class="key" data-series="grid_kw"><span class="swatch" style="background: var(--grid-color)"></span>Grid kW</button>
-                        <button type="button" class="key" data-series="battery_level"><span class="swatch dashed"></span>Battery Level % <span style="color: var(--text-muted)">(right axis)</span></button>
-                    </div>
-                    <canvas id="energy-trend-chart"></canvas>
-                    <div id="energy-trend-tooltip"></div>
-                    <div class="energy-trend-note" id="energy-trend-note"></div>
+                    <!-- Legend, chart, tooltip and note: PWCharts.energyTrend (/static/js/charts.js) -->
+                    <div id="energy-trend-host"></div>
                 </div>
                 </div>
             </div>
@@ -2952,30 +2881,15 @@
             }
         }
 
-        // Chart drawing, hover and tooltip live in /static/js/energy-trend.js,
-        // shared with the History page so fixes land once.
-        const energyTrendChart = EnergyTrend.create(
-            document.getElementById('energy-trend-chart'),
-            document.getElementById('energy-trend-tooltip'),
-            document.getElementById('energy-trend'),
-        );
+        // Legend, drawing, hover, tooltip and resize live in /static/js/charts.js
+        // (PWCharts.energyTrend), shared with the History page so fixes land once.
+        const energyTrendChart = PWCharts.energyTrend(document.getElementById('energy-trend-host'));
+        energyTrendChart.note.id = 'energy-trend-note';
         function drawEnergyTrendChart() {
-            energyTrendChart.update(energyTrendPoints, energyTrendDomain);
+            energyTrendChart.setData(energyTrendPoints, energyTrendDomain);
         }
 
         document.getElementById('energy-card').addEventListener('click', toggleEnergyTrend);
-        window.addEventListener('resize', () => {
-            if (energyTrendActive) energyTrendChart.redraw();
-        });
-
-        // Legend toggle: click a key to show/hide that series
-        document.querySelectorAll('.energy-trend-legend .key[data-series]').forEach(keyEl => {
-            keyEl.addEventListener('click', e => {
-                e.stopPropagation();  // don't flip the card back to summary mode
-                const shown = energyTrendChart.toggle(keyEl.dataset.series);
-                keyEl.classList.toggle('off', !shown);
-            });
-        });
 
         async function loadStats() {
             try {

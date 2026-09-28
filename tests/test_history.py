@@ -671,11 +671,14 @@ class TestHistoryAPI:
 
     def test_energy_trend_script_shared(self, client):
         # Console and History load one shared Energy Trend chart file
-        assert "/static/js/energy-trend.js" in client.get("/history").text
-        assert "/static/js/energy-trend.js" in client.get("/console").text
-        resp = client.get("/static/js/energy-trend.js")
+        for page in ("/history", "/console"):
+            html = client.get(page).text
+            assert "/static/js/charts.js" in html
+            assert "/static/css/charts.css" in html
+        resp = client.get("/static/js/charts.js")
         assert resp.status_code == 200
-        assert "window.EnergyTrend" in resp.text
+        assert "window.PWCharts" in resp.text
+        assert client.get("/static/css/charts.css").status_code == 200
 
     def test_history_page_proxy_base(self, client, monkeypatch):
         import app.main as main_mod

@@ -266,7 +266,9 @@ async def get_samples(
 @router.get("/status")
 async def get_status():
     """Time-series subsystem status: retention settings, DB size, row counts."""
-    return await get_timeseries_store().status()
+    result = await get_timeseries_store().status()
+    result["gateway_names"] = _gateway_names()
+    return result
 
 
 @router.get("/signals")
