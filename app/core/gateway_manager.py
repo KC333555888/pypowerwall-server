@@ -66,7 +66,7 @@ import logging
 import math
 import time
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -230,6 +230,9 @@ class GatewayManager:
             str, GatewayConfig
         ] = {}  # Gateways waiting for lazy initialization
         self._preserve_stale_count: Dict[str, int] = {}  # Multi-PW snapshot preservation staleness tracker
+        # Gateways whose current vitals were copied from the previous poll by
+        # the multi-PW guard: not fresh readings, so not recorded as history.
+        self._vitals_preserved: Set[str] = set()
 
         # TEDAPI SolarOnly fallback tracking (per gateway).
         # Distinct from _consecutive_failures: is_degraded = transient transport
@@ -330,6 +333,7 @@ class GatewayManager:
         The guard is capped at ``_PRESERVE_STALENESS_CAP`` consecutive polls — after
         that, the partial data passes through so downstream consumers see reality.
         """
+        self._vitals_preserved.discard(gateway_id)
         previous = self._last_successful_data.get(gateway_id)
         if not previous:
             return data
@@ -385,6 +389,7 @@ class GatewayManager:
                 self._PRESERVE_STALENESS_CAP,
             )
             data.vitals = deepcopy(previous.vitals)
+            self._vitals_preserved.add(gateway_id)
             preserved_any = True
 
         if (
@@ -1576,7 +1581,7 @@ class GatewayManager:
             logger.debug(f"Time-series sample recording failed for {gateway_id}: {e}")
 
     async def _record_signal_sample(
-        self, gateway_id: str, gateway, data: PowerwallData
+        self, gateway_id: str, gateway: Gateway, data: PowerwallData
     ) -> None:
         """Feed this poll's Powerwall temperatures and fan readings into the
         TimeSeriesStore.
@@ -1596,7 +1601,10 @@ class GatewayManager:
             store = get_timeseries_store()
             if not store.signals_enabled:
                 return
-            metrics = extract_device_metrics(data.vitals, data.fan_speeds)
+            # Vitals copied forward from the previous poll by the multi-PW
+            # guard are not fresh readings: record only this poll's fans
+            vitals = None if gateway_id in self._vitals_preserved else data.vitals
+            metrics = extract_device_metrics(vitals, data.fan_speeds)
             if not metrics:
                 return
             ts = data.timestamp

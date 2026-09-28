@@ -50,11 +50,13 @@ Design Notes:
 
 import re
 import time
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import date
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
+from fastapi.exceptions import RequestValidationError
 
+from app.api.legacy import powerwall_unit_labels
 from app.core.gateway_manager import gateway_manager
 from app.core.timeseries import get_timeseries_store
 
@@ -63,23 +65,101 @@ router = APIRouter()
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _query_error(name: str, msg: str) -> RequestValidationError:
+    """A 422 in FastAPI's standard validation-error shape for a query param."""
+    return RequestValidationError(
+        [{"loc": ("query", name), "msg": msg, "type": "value_error"}]
+    )
+
+
 def _check_day(value: Optional[str], name: str) -> Optional[str]:
     """Validate a YYYY-MM-DD query parameter as a real calendar date.
 
     Raises 422 on bad input, including well-formed but impossible dates
-    such as 2026-02-31 (they would otherwise silently match nothing).
+    such as 2026-02-30 (they would otherwise silently match nothing).
     """
     if value is None:
         return value
     try:
         if not _DAY_RE.match(value):
             raise ValueError
-        datetime.strptime(value, "%Y-%m-%d")
+        date.fromisoformat(value)
     except ValueError:
-        raise HTTPException(
-            status_code=422, detail=f"{name} must be a valid YYYY-MM-DD date"
-        )
+        raise _query_error(name, "must be a valid YYYY-MM-DD date")
     return value
+
+
+# Latest epoch accepted for start/end (2100-01-01); rejects inf, NaN and
+# absurd values that would otherwise raise deep in the store (HTTP 500).
+MAX_EPOCH = 4102444800
+
+
+def _epoch_query(description: str) -> Any:
+    """A bounded, finite optional epoch-seconds query parameter."""
+    return Query(
+        default=None,
+        ge=0,
+        le=MAX_EPOCH,
+        allow_inf_nan=False,
+        description=description,
+    )
+
+
+def _powerwall_labels() -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Powerwall numbering per gateway, from each gateway's cached status."""
+    labels: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for gateway_id in gateway_manager.gateways:
+        status = gateway_manager.get_gateway(gateway_id)
+        data = status.data if status else None
+        labels[gateway_id] = powerwall_unit_labels(
+            getattr(data, "system_status", None),
+            getattr(data, "tedapi_config", None),
+        )
+    return labels
+
+
+def _annotate_powerwalls(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Add ``powerwall`` (label) and ``powerwall_order`` to every series.
+
+    Labels match the Console and ``/pod`` (``PW1``, ``PW2``, ``PW1 Exp 1``),
+    so every API client numbers units the same way. A series whose serial
+    isn't in the gateway's battery list (e.g. before the first full poll)
+    is numbered after the known units: inverter blocks first, then serial.
+    """
+    series = result.get("series") or []
+    if not series:
+        return result
+    labels = _powerwall_labels()
+    unknown: Dict[str, Dict[str, bool]] = {}
+    for entry in series:
+        serial = str(entry.get("device", "")).rsplit("--", 1)[-1]
+        if serial not in labels.get(entry.get("gateway"), {}):
+            has_inverter = str(entry.get("device", "")).split("--")[0] in (
+                "TEPINV",
+                "PVAC",
+            )
+            seen = unknown.setdefault(entry.get("gateway"), {})
+            seen[serial] = seen.get(serial, False) or has_inverter
+    for gateway_id, serials in unknown.items():
+        known = labels.setdefault(gateway_id, {})
+        number = sum(1 for v in known.values() if " Exp" not in v["label"])
+        for serial in sorted(serials, key=lambda s: (not serials[s], s)):
+            number += 1
+            known[serial] = {"label": f"PW{number}", "order": number * 100}
+    for entry in series:
+        serial = str(entry.get("device", "")).rsplit("--", 1)[-1]
+        unit = labels[entry.get("gateway")][serial]
+        entry["powerwall"] = unit["label"]
+        entry["powerwall_order"] = unit["order"]
+    return result
+
+
+def _gateway_names() -> Dict[str, str]:
+    """Display name per configured gateway (for the History page selectors)."""
+    return {
+        gateway_id: getattr(gateway, "name", None) or gateway_id
+        for gateway_id, gateway in gateway_manager.gateways.items()
+    }
 
 
 def _gateway_timezones() -> Dict[str, str]:
@@ -113,11 +193,15 @@ async def get_daily_energy(
     discharge, grid import/export). ``start``/``end`` select an explicit
     range of gateway-local days instead of the last ``days``.
     """
+    start_day = _check_day(start, "start")
+    end_day = _check_day(end, "end")
+    if start_day and end_day and start_day > end_day:
+        raise _query_error("start", "must not be after end")
     return await get_timeseries_store().get_daily_energy(
         days=days,
         gateway=gateway,
-        start_day=_check_day(start, "start"),
-        end_day=_check_day(end, "end"),
+        start_day=start_day,
+        end_day=end_day,
     )
 
 
@@ -149,8 +233,8 @@ async def get_today():
 async def get_trend(
     hours: int = Query(default=24, ge=1, le=168),
     gateway: Optional[str] = Query(default=None),
-    start: Optional[float] = Query(default=None),
-    end: Optional[float] = Query(default=None),
+    start: Optional[float] = _epoch_query("Window start, epoch seconds"),
+    end: Optional[float] = _epoch_query("Window end, epoch seconds"),
     fit: bool = Query(default=False),
 ):
     """Bucketed time series of power (kW) and battery level (%) for charts.
@@ -169,8 +253,8 @@ async def get_trend(
 @router.get("/samples")
 async def get_samples(
     gateway: Optional[str] = Query(default=None),
-    start: Optional[float] = Query(default=None),
-    end: Optional[float] = Query(default=None),
+    start: Optional[float] = _epoch_query("Window start, epoch seconds"),
+    end: Optional[float] = _epoch_query("Window end, epoch seconds"),
     limit: int = Query(default=500, ge=1, le=10000),
 ):
     """Raw power samples, ascending by time (troubleshooting)."""
@@ -194,7 +278,9 @@ async def get_devices(gateway: Optional[str] = Query(default=None)):
     (``first_day``/``last_day``), plus a ``metrics`` catalog of labels,
     units and chart groups (temperature, fan_speed, fan_duty).
     """
-    return await get_timeseries_store().get_signal_series(gateway=gateway)
+    result = await get_timeseries_store().get_signal_series(gateway=gateway)
+    result["gateways"] = _gateway_names()
+    return _annotate_powerwalls(result)
 
 
 @router.get("/signal_trend")
@@ -206,8 +292,8 @@ async def get_signal_trend(
     devices: Optional[str] = Query(
         default=None, description="Comma-separated device blocks"
     ),
-    start: Optional[float] = Query(default=None),
-    end: Optional[float] = Query(default=None),
+    start: Optional[float] = _epoch_query("Window start, epoch seconds"),
+    end: Optional[float] = _epoch_query("Window end, epoch seconds"),
     hours: int = Query(default=24, ge=1, le=24 * 3660),
     resolution: str = Query(default="auto", pattern="^(auto|raw|daily)$"),
 ):
@@ -218,7 +304,7 @@ async def get_signal_trend(
     stored local day (with ``day``). ``auto`` picks raw for windows up to 14
     days still covered by raw retention, else daily.
     """
-    return await get_timeseries_store().get_signal_trend(
+    result = await get_timeseries_store().get_signal_trend(
         metrics=_split(metrics),
         gateway=gateway,
         devices=_split(devices),
@@ -228,3 +314,4 @@ async def get_signal_trend(
         resolution=resolution,
         timezones=_gateway_timezones(),
     )
+    return _annotate_powerwalls(result)

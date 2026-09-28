@@ -17,9 +17,8 @@ import time
 import pytest
 
 from app.core.timeseries import (
-    DEVICE_METRICS,
     SIGNAL_GROUPS,
-    DEVICE_SIGNALS,
+    SIGNAL_METRICS,
     TimeSeriesStore,
     extract_device_metrics,
 )
@@ -71,14 +70,18 @@ class TestExtract:
 
     def test_heatsink_not_recorded(self):
         # Constant on current firmware - deliberately excluded
-        assert "PCH_heatsinkTemp" not in DEVICE_SIGNALS
+        recorded = {s for m in SIGNAL_METRICS.values() for s in m["signals"]}
+        assert "PCH_heatsinkTemp" not in recorded
 
     def test_pw2_signals(self):
         m = extract_device_metrics(
             {"TETHC--1": {"THC_AmbientTemp": 25.5}},
             {"PVAC--1": {"PVAC_Fan_Speed_Actual_RPM": 2000}},
         )
-        assert m == {("TETHC--1", "ambient_temp"): 25.5, ("PVAC--1", "fan_rpm"): 2000.0}
+        assert m == {
+            ("TETHC--1", "controller_ambient"): 25.5,
+            ("PVAC--1", "fan_rpm"): 2000.0,
+        }
 
     def test_skips_missing_and_bad_values(self):
         m = extract_device_metrics(
@@ -99,10 +102,17 @@ class TestExtract:
         assert extract_device_metrics(None, None) == {}
         assert extract_device_metrics("x", []) == {}
 
-    def test_every_signal_has_catalog_entry(self):
-        for metric in DEVICE_SIGNALS.values():
-            assert metric in DEVICE_METRICS
-            assert DEVICE_METRICS[metric]["group"] in SIGNAL_GROUPS
+    def test_registry_entries_are_complete(self):
+        signals = []
+        for metric, entry in SIGNAL_METRICS.items():
+            assert set(entry) >= {"signals", "label", "unit", "group", "order"}
+            assert entry["signals"], metric
+            assert entry["group"] in SIGNAL_GROUPS, metric
+            signals.extend(entry["signals"])
+        # A signal feeds exactly one metric
+        assert len(signals) == len(set(signals))
+        for group in SIGNAL_GROUPS.values():
+            assert set(group) >= {"label", "order", "zero_based", "decimals"}
 
 
 # ---------------------------------------------------------------------------
@@ -194,8 +204,14 @@ class TestRecordDevice:
         store = store_for(tmp_path, retention="-1")
         assert store.signals_enabled is False
         body = await store.get_signal_trend()
-        assert body == {"enabled": False, "series": [], "resolution": None}
+        assert body["enabled"] is False and body["series"] == []
+        series = await store.get_signal_series()
         await store.stop()
+        # Same keys as an enabled store's responses
+        enabled = store_for(tmp_path / "on")
+        assert set(body) == set(await enabled.get_signal_trend())
+        assert set(series) == set(await enabled.get_signal_series())
+        await enabled.stop()
 
     @pytest.mark.asyncio
     async def test_pruning_keeps_daily(self, tmp_path):
@@ -439,6 +455,125 @@ class TestDeviceTimezones:
         assert body["resolution"] == "raw"
 
 
+class TestMetricRename:
+    @pytest.mark.asyncio
+    async def test_old_metric_id_is_migrated(self, tmp_path):
+        import sqlite3
+
+        db = tmp_path / "ts.db"
+        store = TimeSeriesStore(db_path=str(db))
+        await store.record_signal_sample(
+            "gw1",
+            time.time(),
+            {("TETHC--2012170-25-E--TG1", "controller_ambient"): 21.0},
+        )
+        await store.stop()
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE device_series SET metric='ambient_temp'")
+        conn.commit()
+        conn.close()
+        reopened = TimeSeriesStore(db_path=str(db))
+        series = (await reopened.get_signal_series())["series"]
+        assert [s["metric"] for s in series] == ["controller_ambient"]
+        await reopened.stop()
+
+
+class TestPowerwallNumbering:
+    """Units are numbered like the Console / pod: battery list order."""
+
+    SYSTEM_STATUS = {
+        "battery_blocks": [
+            {"PackageSerialNumber": "TG1LEAD"},
+            {"PackageSerialNumber": "TG1FOLLOW"},
+            {"PackageSerialNumber": "TG1EXP1"},
+            {"PackageSerialNumber": "TG1EXP2", "Type": "BatteryExpansion"},
+        ]
+    }
+    CONFIG = {
+        "battery_blocks": [
+            {
+                "vin": "1707000-11-J--TG1LEAD",
+                "battery_expansions": [{"din": "1807000-20-A--TG1EXP1"}],
+            },
+            {"vin": "1707000-11-J--TG1FOLLOW"},
+        ]
+    }
+
+    def test_labels_follow_battery_list_with_expansions(self):
+        from app.api.legacy import powerwall_unit_labels
+
+        labels = powerwall_unit_labels(self.SYSTEM_STATUS, self.CONFIG)
+        assert labels["TG1LEAD"]["label"] == "PW1"
+        assert labels["TG1FOLLOW"]["label"] == "PW2"
+        # Serial order would put the follower first; the battery list wins
+        assert labels["TG1EXP1"]["label"] == "PW1 Exp 1"
+        assert labels["TG1LEAD"]["order"] < labels["TG1EXP1"]["order"]
+        assert labels["TG1EXP1"]["order"] < labels["TG1FOLLOW"]["order"]
+        # An expansion marked only by Type still gets an Exp label
+        assert "Exp" in labels["TG1EXP2"]["label"]
+        assert powerwall_unit_labels(None, None) == {}
+
+    def test_series_are_annotated(self, monkeypatch):
+        import app.api.timeseries as api
+
+        monkeypatch.setattr(
+            api,
+            "_powerwall_labels",
+            lambda: {"gw1": {"TG1LEAD": {"label": "PW1", "order": 100}}},
+        )
+        result = api._annotate_powerwalls(
+            {
+                "series": [
+                    {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1LEAD"},
+                    {"gateway": "gw1", "device": "TEPINV--1707000-11-J--TG1LEAD"},
+                    # Not in the battery list yet: numbered after known units
+                    {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1NEW"},
+                ]
+            }
+        )
+        labels = [s["powerwall"] for s in result["series"]]
+        assert labels == ["PW1", "PW1", "PW2"]
+        assert result["series"][2]["powerwall_order"] == 200
+
+
+class TestSignalTrendBounds:
+    @pytest.mark.parametrize(
+        "query", ["start=nan", "start=inf", "start=1e20", "end=-1"]
+    )
+    @pytest.mark.parametrize("route", ["signal_trend", "trend", "samples"])
+    def test_bad_times_are_422(self, client, route, query):
+        assert client.get(f"/api/timeseries/{route}?{query}").status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_raw_beyond_max_span_reads_daily(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 60, {(POD, "pack_temp_max"): 30.0}
+        )
+        body = await store.get_signal_trend(
+            start=now - 30 * 86400, end=now, resolution="raw"
+        )
+        assert body["resolution"] == "daily"
+
+    @pytest.mark.asyncio
+    async def test_large_row_estimate_reads_daily(self, tmp_path, monkeypatch):
+        import app.core.timeseries as ts
+
+        monkeypatch.setattr(ts, "SIGNAL_RAW_MAX_ROWS", 100)
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 60, {(POD, "pack_temp_max"): 30.0}
+        )
+        # 1 series x 6h / 60s = 360 estimated rows > 100
+        for resolution in ("raw", "auto"):
+            body = await store.get_signal_trend(
+                start=now - 6 * 3600, end=now, resolution=resolution
+            )
+            assert body["resolution"] == "daily", resolution
+
+
 class TestDailyRange:
     @pytest.mark.asyncio
     async def test_start_end(self, tmp_path):
@@ -452,7 +587,9 @@ class TestDailyRange:
                 (day,),
             )
         conn.commit()
-        body = await store.get_daily_energy(start_day="2024-01-01", end_day="2025-01-01")
+        body = await store.get_daily_energy(
+            start_day="2024-01-01", end_day="2025-01-01"
+        )
         assert [d["day"] for d in body["days"]] == [
             "2025-01-01",
             "2024-06-15",
@@ -527,7 +664,7 @@ class TestHistoryAPI:
         # Cards come from /api/timeseries/signals; the page must not name
         # individual metrics or groups (a new one should need no page change)
         page = client.get("/history").text
-        for name in DEVICE_METRICS:
+        for name in SIGNAL_METRICS:
             assert name not in page, name
         for group in SIGNAL_GROUPS:  # as a code identifier, not prose
             assert f"'{group}'" not in page and f'"{group}"' not in page, group
@@ -610,4 +747,212 @@ class TestPollWiring:
         status = await ts_mod.get_timeseries_store().status()
         assert status["signal_samples"] == 0
         assert status["samples"] == 1  # power samples unaffected
+        ts_mod.reset_timeseries_store()
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: failure paths, retention, gating, bounds
+# ---------------------------------------------------------------------------
+
+
+class TestExtractEdges:
+    def test_non_finite_values_skipped(self):
+        vitals = {
+            POD: {"HVP_PackTempMax": float("inf"), "HVP_PackTempMin": float("nan")}
+        }
+        assert extract_device_metrics(vitals, None) == {}
+
+    def test_fan_speeds_take_precedence_over_vitals(self):
+        vitals = {INV: {"PCH_FanSpeed_A": 100}}
+        fans = {INV: {"PCH_FanSpeed_A": 200}}
+        assert extract_device_metrics(vitals, fans)[(INV, "fan_a_rpm")] == 200.0
+
+
+class TestGating:
+    @pytest.mark.asyncio
+    async def test_gate_is_per_series(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        t = time.time()
+        # Vitals timed out: only fans this poll
+        assert await store.record_signal_sample("gw1", t, {(INV, "fan_a_rpm"): 900.0})
+        # Next poll has temperatures: not blocked by the fan sample
+        assert await store.record_signal_sample(
+            "gw1", t + 5, {(POD, "pack_temp_max"): 30.0, (INV, "fan_a_rpm"): 950.0}
+        )
+        status = await store.status()
+        assert status["signal_samples"] == 2  # fan gated, temperature recorded
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_clock_stepping_back_resets_gate(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        t = time.time()
+        metrics = {(POD, "pack_temp_max"): 30.0}
+        assert await store.record_signal_sample("gw1", t, metrics)
+        assert await store.record_signal_sample("gw1", t - 3600, metrics)
+        await store.stop()
+
+
+class TestRetention:
+    @pytest.mark.asyncio
+    async def test_prune_keeps_floor(self, tmp_path):
+        store = store_for(tmp_path, signal_retention="90s", signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 7200, {(POD, "pack_temp_max"): 1.0}
+        )
+        await store.record_signal_sample(
+            "gw1", now - 1800, {(POD, "pack_temp_max"): 2.0}
+        )
+        store._maintenance_sync()
+        # 90s retention, but the last hour always stays
+        assert (await store.status())["signal_samples"] == 1
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_daily_rollups_pruned(self, tmp_path):
+        store = store_for(tmp_path, daily_retention="2d", signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 10 * 86400, {(POD, "pack_temp_max"): 1.0}, timezone="UTC"
+        )
+        await store.record_signal_sample(
+            "gw1", now, {(POD, "pack_temp_max"): 2.0}, timezone="UTC"
+        )
+        store._maintenance_sync()
+        assert (await store.status())["signal_daily_rows"] == 1
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_recording_off_still_prunes_existing(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 40 * 86400, {(POD, "pack_temp_max"): 1.0}
+        )
+        await store.record_signal_sample("gw1", now - 60, {(POD, "pack_temp_max"): 2.0})
+        await store.record_signal_sample(
+            "gw1", now - 40 * 86400, {("TETHC--1", "controller_ambient"): 3.0}
+        )
+        await store.stop()
+        # Operator turns recording off: earlier data must still age out
+        off = store_for(tmp_path, signal_retention="-1", daily_retention="7d")
+        assert off.signals_enabled is False
+        off._maintenance_sync()
+        status = await off.status()
+        assert status["signal_samples"] == 1
+        # The TETHC series has no samples or daily rows left: removed
+        assert status["signal_series"] == 1
+        await off.stop()
+
+
+class TestTrendWindow:
+    @pytest.mark.asyncio
+    async def test_daily_upper_bound(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        base = time.time() - 5 * 86400
+        for i in range(4):
+            await store.record_signal_sample(
+                "gw1",
+                base + i * 86400,
+                {(POD, "pack_temp_max"): float(i)},
+                timezone="UTC",
+            )
+        body = await store.get_signal_trend(
+            start=base, end=base + 86400, resolution="daily", timezones={"gw1": "UTC"}
+        )
+        (series,) = body["series"]
+        assert len(series["points"]) == 2  # days after the window excluded
+        await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_end_swapped(self, tmp_path):
+        store = store_for(tmp_path, signal_interval="60s")
+        now = time.time()
+        await store.record_signal_sample(
+            "gw1", now - 600, {(POD, "pack_temp_max"): 30.0}
+        )
+        body = await store.get_signal_trend(start=now, end=now - 3600, resolution="raw")
+        assert body["start"] < body["end"]
+        assert body["series"][0]["points"]
+        await store.stop()
+
+    def test_hours_bounds(self, client):
+        assert client.get("/api/timeseries/signal_trend?hours=0").status_code == 422
+        assert (
+            client.get("/api/timeseries/signal_trend?hours=100000000").status_code
+            == 422
+        )
+
+
+class TestFailurePaths:
+    @pytest.mark.asyncio
+    async def test_write_failure_counted(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        store = store_for(tmp_path, signal_interval="60s")
+
+        def boom(*args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(store, "_series_id", boom)
+        ok = await store.record_signal_sample(
+            "gw1", time.time(), {(POD, "pack_temp_max"): 30.0}
+        )
+        assert ok is False
+        assert (await store.status())["write_failures"] == 1
+        await store.stop()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [RuntimeError("store broke"), "timeout"])
+    async def test_poll_continues_when_store_fails(
+        self, tmp_path, monkeypatch, mock_gateway_manager, mock_pypowerwall, error
+    ):
+        import asyncio
+
+        import app.core.timeseries as ts_mod
+        from app.config import settings
+        from app.models.gateway import Gateway, GatewayStatus
+
+        monkeypatch.setattr(settings, "timeseries_path", str(tmp_path / "f.db"))
+        ts_mod.reset_timeseries_store()
+        store = ts_mod.get_timeseries_store()
+
+        async def failing(*args, **kwargs):
+            if error == "timeout":
+                raise asyncio.TimeoutError()
+            raise error
+
+        monkeypatch.setattr(store, "record_signal_sample", failing)
+        mock_pypowerwall.vitals.return_value = PW3_VITALS
+        gw = Gateway(id="gw1", name="G1", host="1.2.3.4", gw_pwd="x", timezone="UTC")
+        mock_gateway_manager.gateways["gw1"] = gw
+        mock_gateway_manager.connections["gw1"] = mock_pypowerwall
+        mock_gateway_manager.cache["gw1"] = GatewayStatus(gateway=gw, online=False)
+
+        await mock_gateway_manager._poll_gateway("gw1")  # must not raise
+        assert mock_gateway_manager.cache["gw1"].online is True
+        assert (await store.status())["samples"] == 1  # power still recorded
+        ts_mod.reset_timeseries_store()
+
+    @pytest.mark.asyncio
+    async def test_preserved_vitals_not_recorded(
+        self, tmp_path, monkeypatch, mock_gateway_manager
+    ):
+        import app.core.timeseries as ts_mod
+        from app.config import settings
+        from app.models.gateway import Gateway, PowerwallData
+
+        monkeypatch.setattr(settings, "timeseries_path", str(tmp_path / "p.db"))
+        ts_mod.reset_timeseries_store()
+        gw = Gateway(id="gw1", name="G1", host="1.2.3.4", gw_pwd="x", timezone="UTC")
+        data = PowerwallData(
+            vitals=PW3_VITALS, fan_speeds=PW3_FANS, timestamp=time.time()
+        )
+        # The multi-PW guard copied last poll's vitals forward
+        mock_gateway_manager._vitals_preserved.add("gw1")
+        await mock_gateway_manager._record_signal_sample("gw1", gw, data)
+        info = await ts_mod.get_timeseries_store().get_signal_series(gateway="gw1")
+        groups = {s["metric"] for s in info["series"]}
+        assert groups and all("fan" in m for m in groups)  # fans only
         ts_mod.reset_timeseries_store()

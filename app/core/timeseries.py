@@ -27,7 +27,7 @@ Architecture:
 Device signals (Powerwall temperatures and fans):
     Per-device readings (battery pack max/min, shunt and inverter ambient
     temperatures; fan speed and duty cycle) are stored as generic series so
-    a new signal needs only an entry in DEVICE_SIGNALS, no schema change:
+    a new signal needs only an entry in SIGNAL_METRICS, no schema change:
 
     - ``device_series``  one row per (gateway, device block, metric), e.g.
       ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
@@ -123,64 +123,125 @@ MAINTENANCE_INTERVAL = 60.0
 # Minimum seconds between repeated write-failure warnings.
 _FAILURE_WARN_INTERVAL = 300.0
 
-# Device signals recorded as time series: vitals / fan_speeds signal name ->
-# metric id. Blocks are the pypowerwall device keys (TEPOD--, TEPINV--,
-# TETHC--, PVAC--), so each Powerwall unit gets its own series.
-# PCH_heatsinkTemp is deliberately absent: it reads a constant 45.45 °C on
-# current PW3 firmware.
-DEVICE_SIGNALS: Dict[str, str] = {
-    # Powerwall 3 battery (TEPOD blocks)
-    "HVP_PackTempMax": "pack_temp_max",
-    "HVP_PackTempMin": "pack_temp_min",
-    "HVP_ShuntTemperature": "shunt_temp",
-    # Powerwall 3 inverter (TEPINV blocks, vitals and fan_speeds)
-    "PCH_AmbientTemp": "inverter_ambient",
-    "PCH_FanSpeed_A": "fan_a_rpm",
-    "PCH_FanSpeed_B": "fan_b_rpm",
-    "PCH_FanDuty_A": "fan_a_duty",
-    "PCH_FanDuty_B": "fan_b_duty",
-    # Powerwall 2/+ (TETHC thermal controller, PVAC fan)
-    "THC_AmbientTemp": "ambient_temp",
-    "PVAC_Fan_Speed_Actual_RPM": "fan_rpm",
-}
-
-# Chart groups, in display order. The History page draws one chart card per
-# group that has data, titled with ``label``; ``zero_based`` starts the
-# y-axis at 0 (speeds and duty cycles) instead of fitting the data (temps).
-# A metric in a group not listed here still gets a card, titled from the
-# group id, so a new group only needs entries here and in DEVICE_METRICS.
+# Signal registry: what gets recorded and how it is shown. Adding a metric
+# (or a whole new chart group) is one entry here, and in SIGNAL_GROUPS for a
+# new group; the History page builds its cards from this catalog with no
+# per-metric code. Metric ids are permanent once released (they are stored).
+#
+# Chart groups, ordered by ``order``. ``zero_based`` starts the y-axis at 0
+# (speeds, duty cycles) instead of fitting the data; ``decimals`` is the
+# precision the page shows.
 SIGNAL_GROUPS: Dict[str, Dict[str, Any]] = {
-    "temperature": {"label": "Powerwall temperatures", "zero_based": False},
-    "fan_speed": {"label": "Fan speed", "zero_based": True},
-    "fan_duty": {"label": "Fan duty cycle", "zero_based": True},
+    "temperature": {
+        "label": "Powerwall temperatures",
+        "order": 10,
+        "zero_based": False,
+        "decimals": 1,
+    },
+    "fan_speed": {"label": "Fan speed", "order": 20, "zero_based": True, "decimals": 0},
+    "fan_duty": {
+        "label": "Fan duty cycle",
+        "order": 30,
+        "zero_based": True,
+        "decimals": 1,
+    },
 }
 
-# Metric catalog for API clients: label, unit and chart group. Order is the
-# display order within a group (the page assigns palette colors by it).
-DEVICE_METRICS: Dict[str, Dict[str, str]] = {
+# One entry per metric: the pypowerwall vitals / fan_speeds signal names it
+# records (per device block: TEPOD--, TEPINV--, TETHC--, PVAC--, so each
+# Powerwall unit gets its own series), its label, unit, group and order
+# within the group. PCH_heatsinkTemp is deliberately absent: it reads a
+# constant 45.45 °C on current PW3 firmware.
+SIGNAL_METRICS: Dict[str, Dict[str, Any]] = {
+    # Powerwall 3 battery (TEPOD blocks)
     "pack_temp_max": {
+        "signals": ["HVP_PackTempMax"],
         "label": "Pack temp (max)",
         "unit": "°C",
         "group": "temperature",
+        "order": 10,
     },
     "pack_temp_min": {
+        "signals": ["HVP_PackTempMin"],
         "label": "Pack temp (min)",
         "unit": "°C",
         "group": "temperature",
+        "order": 20,
     },
-    "shunt_temp": {"label": "Shunt temp", "unit": "°C", "group": "temperature"},
+    "shunt_temp": {
+        "signals": ["HVP_ShuntTemperature"],
+        "label": "Shunt temp",
+        "unit": "°C",
+        "group": "temperature",
+        "order": 30,
+    },
+    # Powerwall 3 inverter (TEPINV blocks, vitals and fan_speeds)
     "inverter_ambient": {
+        "signals": ["PCH_AmbientTemp"],
         "label": "Inverter ambient",
         "unit": "°C",
         "group": "temperature",
+        "order": 40,
     },
-    "ambient_temp": {"label": "Ambient temp", "unit": "°C", "group": "temperature"},
-    "fan_a_rpm": {"label": "Fan A speed", "unit": "rpm", "group": "fan_speed"},
-    "fan_b_rpm": {"label": "Fan B speed", "unit": "rpm", "group": "fan_speed"},
-    "fan_rpm": {"label": "Fan speed", "unit": "rpm", "group": "fan_speed"},
-    "fan_a_duty": {"label": "Fan A duty", "unit": "%", "group": "fan_duty"},
-    "fan_b_duty": {"label": "Fan B duty", "unit": "%", "group": "fan_duty"},
+    # Powerwall 2/+ thermal controller (TETHC blocks)
+    "controller_ambient": {
+        "signals": ["THC_AmbientTemp"],
+        "label": "Thermal controller ambient",
+        "unit": "°C",
+        "group": "temperature",
+        "order": 50,
+    },
+    "fan_a_rpm": {
+        "signals": ["PCH_FanSpeed_A"],
+        "label": "Fan A speed",
+        "unit": "rpm",
+        "group": "fan_speed",
+        "order": 10,
+    },
+    "fan_b_rpm": {
+        "signals": ["PCH_FanSpeed_B"],
+        "label": "Fan B speed",
+        "unit": "rpm",
+        "group": "fan_speed",
+        "order": 20,
+    },
+    # Powerwall+ inverter fan (PVAC blocks)
+    "fan_rpm": {
+        "signals": ["PVAC_Fan_Speed_Actual_RPM"],
+        "label": "Fan speed",
+        "unit": "rpm",
+        "group": "fan_speed",
+        "order": 30,
+    },
+    "fan_a_duty": {
+        "signals": ["PCH_FanDuty_A"],
+        "label": "Fan A duty",
+        "unit": "%",
+        "group": "fan_duty",
+        "order": 10,
+    },
+    "fan_b_duty": {
+        "signals": ["PCH_FanDuty_B"],
+        "label": "Fan B duty",
+        "unit": "%",
+        "group": "fan_duty",
+        "order": 20,
+    },
 }
+
+# Metric ids renamed before release; existing rows are migrated on open.
+_RENAMED_METRICS: Dict[str, str] = {"ambient_temp": "controller_ambient"}
+
+# Derived lookup used when recording: signal name -> metric id.
+_SIGNAL_TO_METRIC: Dict[str, str] = {
+    signal: metric
+    for metric, entry in SIGNAL_METRICS.items()
+    for signal in entry["signals"]
+}
+
+# Default raw signal retention; also the pruning window when recording is
+# turned off (PW_TIMESERIES_SIGNAL_RETENTION=-1), so old samples still age out.
+SIGNAL_DEFAULT_RETENTION = "30d"
 
 # Shortest temperature/fan sample interval. These signals change slowly and
 # finer sampling costs real disk (and SD-card wear) for little insight: at
@@ -190,6 +251,11 @@ SIGNAL_MIN_INTERVAL = 30
 # Longest window (seconds) served from raw device samples; longer ranges
 # read the daily min/avg/max rollups instead.
 DEVICE_RAW_MAX_SPAN = 14 * 86400.0
+
+# Most raw sample rows one signal-trend query may scan. Queries hold the
+# store's lock and its single worker thread, so an unbounded raw read would
+# queue power-sample writes behind it; larger requests read daily rollups.
+SIGNAL_RAW_MAX_ROWS = 500_000
 
 
 def extract_device_metrics(
@@ -214,7 +280,7 @@ def extract_device_metrics(
         for device, signals in payload.items():
             if not isinstance(signals, dict):
                 continue
-            for signal, metric in DEVICE_SIGNALS.items():
+            for signal, metric in _SIGNAL_TO_METRIC.items():
                 value = signals.get(signal)
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     continue
@@ -345,11 +411,9 @@ class TimeSeriesStore:
             daily_retention, "0", "PW_TIMESERIES_DAILY_RETENTION"
         )
         self._signal_retention = self._coerce(
-            signal_retention, "30d", "PW_TIMESERIES_SIGNAL_RETENTION"
+            signal_retention, SIGNAL_DEFAULT_RETENTION, "PW_TIMESERIES_SIGNAL_RETENTION"
         )
-        interval = self._coerce(
-            signal_interval, "60s", "PW_TIMESERIES_SIGNAL_INTERVAL"
-        )
+        interval = self._coerce(signal_interval, "60s", "PW_TIMESERIES_SIGNAL_INTERVAL")
         if interval < SIGNAL_MIN_INTERVAL:
             logger.warning(
                 "PW_TIMESERIES_SIGNAL_INTERVAL=%ss is below the %ss minimum; "
@@ -373,7 +437,8 @@ class TimeSeriesStore:
         self._state: Dict[str, Dict[str, Any]] = {}
         # Last device-signal sample time per gateway (interval gating) and
         # (gateway, device, metric) -> series_id lookups.
-        self._signal_last: Dict[str, float] = {}
+        # Last recorded ts per series (gateway, device, metric)
+        self._signal_last: Dict[Tuple[str, str, str], float] = {}
         self._series_ids: Dict[Tuple[str, str, str], int] = {}
 
     # ------------------------------------------------------------------
@@ -503,6 +568,13 @@ class TimeSeriesStore:
                     grid_export_w REAL NOT NULL DEFAULT 0
                 );
                 """)
+            # Metric ids renamed before release: keep already-recorded rows
+            # (an id already present under the new name keeps its own rows)
+            for old, new in _RENAMED_METRICS.items():
+                conn.execute(
+                    "UPDATE OR IGNORE device_series SET metric=? WHERE metric=?",
+                    (new, old),
+                )
             conn.commit()
             self._conn = conn
             logger.debug("TimeSeriesStore opened %s (WAL mode)", self._db_path)
@@ -756,9 +828,12 @@ class TimeSeriesStore:
     ) -> bool:
         """Record one snapshot of device signals for a gateway.
 
-        Called every poll cycle; samples closer together than the device
-        interval are skipped, so the 60s default costs ~1 row per series per
-        minute instead of per poll.
+        Called every poll cycle. Each series is gated on its own: a value
+        closer than the signal interval to that series' last sample is
+        skipped, so the 60s default costs ~1 row per series per minute, and a
+        poll that is missing some signals (e.g. vitals timed out but fans
+        arrived) doesn't use up the interval for the others. A clock that
+        steps backwards resets the gate for that series.
 
         Args:
             gateway_id: Gateway identifier.
@@ -772,13 +847,19 @@ class TimeSeriesStore:
         """
         if not self.signals_enabled or not metrics:
             return False
-        last = self._signal_last.get(gateway_id)
         # Poll timing jitters by a second or two; don't let a gap just short
         # of the interval (e.g. 59.9s at 60s) push the sample to the next poll.
         slack = min(2.5, self._signal_interval / 2.0)
-        if last is not None and ts - last < self._signal_interval - slack:
+        due: Dict[Tuple[str, str], float] = {}
+        for (device, metric), value in metrics.items():
+            last = self._signal_last.get((gateway_id, device, metric))
+            if last is not None and 0 <= ts - last < self._signal_interval - slack:
+                continue
+            due[(device, metric)] = value
+            self._signal_last[(gateway_id, device, metric)] = float(ts)
+        if not due:
             return False
-        self._signal_last[gateway_id] = float(ts)
+        metrics = due
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(),
@@ -802,7 +883,7 @@ class TimeSeriesStore:
         key = (gateway_id, device, metric)
         series_id = self._series_ids.get(key)
         if series_id is None:
-            unit = DEVICE_METRICS.get(metric, {}).get("unit")
+            unit = SIGNAL_METRICS.get(metric, {}).get("unit")
             conn.execute(
                 "INSERT OR IGNORE INTO device_series "
                 "(gateway_id, device, metric, unit) VALUES (?,?,?,?)",
@@ -860,6 +941,17 @@ class TimeSeriesStore:
         devices: Optional[Iterable[str]],
         metrics: Optional[Iterable[str]],
     ) -> Tuple[str, List[Any]]:
+        """Build a SQL WHERE clause selecting device_series rows.
+
+        Args:
+            gateway: Restrict to one gateway ID (None = all).
+            devices: Restrict to these device blocks (None/empty = all).
+            metrics: Restrict to these metric ids (None/empty = all).
+
+        Returns:
+            (" WHERE ..." or "", parameters), ready to append to a
+            ``SELECT ... FROM device_series`` query.
+        """
         clauses: List[str] = []
         params: List[Any] = []
         if gateway:
@@ -873,30 +965,30 @@ class TimeSeriesStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         return where, params
 
-    async def get_signal_series(
-        self, gateway: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Recorded device series with their raw and daily coverage."""
+    async def get_signal_series(self, gateway: Optional[str] = None) -> Dict[str, Any]:
+        """Recorded device series with their raw and daily coverage.
+
+        The response has the same keys whether or not the store is enabled.
+        """
         if not self.enabled:
-            return {
-                "enabled": False,
-                "series": [],
-                "metrics": DEVICE_METRICS,
-                "groups": SIGNAL_GROUPS,
-            }
+            return {**self._signal_series_base(), "enabled": False, "series": []}
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(), partial(self._get_signal_series_sync, gateway)
         )
 
-    def _get_signal_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
-        base = {
+    def _signal_series_base(self) -> Dict[str, Any]:
+        """Keys shared by every get_signal_series() response."""
+        return {
             "enabled": True,
             "signals_enabled": self.signals_enabled,
             "interval_seconds": self._signal_interval,
-            "metrics": DEVICE_METRICS,
+            "metrics": SIGNAL_METRICS,
             "groups": SIGNAL_GROUPS,
         }
+
+    def _get_signal_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
+        base = self._signal_series_base()
         with self._lock:
             try:
                 conn = self._ensure_conn()
@@ -925,7 +1017,7 @@ class TimeSeriesStore:
                 "device": row["device"],
                 "metric": row["metric"],
                 "unit": row["unit"],
-                "label": DEVICE_METRICS.get(row["metric"], {}).get(
+                "label": SIGNAL_METRICS.get(row["metric"], {}).get(
                     "label", row["metric"]
                 ),
                 "first_ts": row["first_ts"],
@@ -969,7 +1061,15 @@ class TimeSeriesStore:
                         gateway is missing).
         """
         if not self.enabled:
-            return {"enabled": False, "series": [], "resolution": None}
+            # Same keys as an enabled response (see _get_signal_trend_sync)
+            return {
+                "enabled": False,
+                "start": start,
+                "end": end,
+                "resolution": None,
+                "bucket_seconds": None,
+                "series": [],
+            }
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(),
@@ -1034,9 +1134,19 @@ class TimeSeriesStore:
                     )
                 zones = {gw: _get_zone(timezones.get(gw)) for gw in by_gateway}
 
-                if resolution not in ("raw", "daily"):
-                    resolution = self._pick_signal_resolution(
-                        conn, by_gateway, zones, start, span
+                # Estimated raw rows: series x samples per series in the window
+                raw_rows = len(ids) * span / max(1, self._signal_interval)
+                if resolution == "raw" and (
+                    span > DEVICE_RAW_MAX_SPAN or raw_rows > SIGNAL_RAW_MAX_ROWS
+                ):
+                    resolution = "daily"  # bounded: never scan unbounded raw
+                elif resolution not in ("raw", "daily"):
+                    resolution = (
+                        "daily"
+                        if raw_rows > SIGNAL_RAW_MAX_ROWS
+                        else self._pick_signal_resolution(
+                            conn, by_gateway, zones, start, span
+                        )
                     )
                 points: Dict[int, List[Dict[str, Any]]] = {i: [] for i in ids}
                 if resolution == "raw":
@@ -1051,7 +1161,7 @@ class TimeSeriesStore:
                         "SELECT series_id, "
                         "CAST(ts / ? AS INTEGER) * ? AS bstart, "
                         "AVG(value) AS avg_v, MIN(value) AS min_v, "
-                        "MAX(value) AS max_v FROM device_samples "
+                        "MAX(value) AS max_v, COUNT(*) AS n FROM device_samples "
                         f"WHERE series_id IN ({marks}) AND ts>=? AND ts<=? "
                         "GROUP BY series_id, bstart ORDER BY series_id, bstart",
                         (bucket, bucket, *ids, int(start), int(end) + 1),
@@ -1063,6 +1173,7 @@ class TimeSeriesStore:
                                 "avg": row["avg_v"],
                                 "min": row["min_v"],
                                 "max": row["max_v"],
+                                "n": row["n"],
                             }
                         )
                     result["bucket_seconds"] = bucket
@@ -1078,7 +1189,7 @@ class TimeSeriesStore:
                         rows.extend(
                             (zone, row)
                             for row in conn.execute(
-                                "SELECT series_id, day, min_value, max_value, "
+                                "SELECT series_id, day, min_value, max_value, count, "
                                 "sum_value / count AS avg_v FROM device_daily "
                                 f"WHERE series_id IN ({gw_marks}) "
                                 "AND day>=? AND day<=? ORDER BY series_id, day",
@@ -1098,6 +1209,7 @@ class TimeSeriesStore:
                                 "avg": row["avg_v"],
                                 "min": row["min_value"],
                                 "max": row["max_value"],
+                                "n": row["count"],
                             }
                         )
                     result["bucket_seconds"] = 86400.0
@@ -1111,7 +1223,7 @@ class TimeSeriesStore:
                 "device": row["device"],
                 "metric": row["metric"],
                 "unit": row["unit"],
-                "label": DEVICE_METRICS.get(row["metric"], {}).get(
+                "label": SIGNAL_METRICS.get(row["metric"], {}).get(
                     "label", row["metric"]
                 ),
                 "points": points[row["series_id"]],
@@ -1188,9 +1300,7 @@ class TimeSeriesStore:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._ensure_executor(),
-            partial(
-                self._get_daily_energy_sync, days, gateway, start_day, end_day
-            ),
+            partial(self._get_daily_energy_sync, days, gateway, start_day, end_day),
         )
 
     def _get_daily_energy_sync(
@@ -1215,9 +1325,9 @@ class TimeSeriesStore:
                 lo = start_day or "0000-00-00"
                 hi = end_day or "9999-99-99"
             else:
-                lo = (
-                    datetime.now(_UTC) - timedelta(days=max(days, 1))
-                ).strftime("%Y-%m-%d")
+                lo = (datetime.now(_UTC) - timedelta(days=max(days, 1))).strftime(
+                    "%Y-%m-%d"
+                )
                 hi = "9999-99-99"
             if gateway:
                 rows = conn.execute(
@@ -1596,11 +1706,22 @@ class TimeSeriesStore:
                     conn.execute(
                         "DELETE FROM device_daily WHERE day < ?", (cutoff_day,)
                     )
-                if self._signal_retention > 0:
-                    cutoff = now - max(self._signal_retention, RAW_KEEP_FLOOR)
+                # Signal samples: pruned even when recording is off (-1), on
+                # the default window, so earlier history still ages out.
+                signal_retention = self._signal_retention
+                if signal_retention == -1:
+                    signal_retention = parse_duration(SIGNAL_DEFAULT_RETENTION)
+                if signal_retention > 0:
+                    cutoff = now - max(signal_retention, RAW_KEEP_FLOOR)
                     conn.execute(
                         "DELETE FROM device_samples WHERE ts < ?", (int(cutoff),)
                     )
+                # Series with nothing left in either table
+                conn.execute(
+                    "DELETE FROM device_series WHERE series_id NOT IN "
+                    "(SELECT series_id FROM device_samples) AND series_id NOT IN "
+                    "(SELECT series_id FROM device_daily)"
+                )
                 conn.commit()
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except sqlite3.Error as e:
