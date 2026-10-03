@@ -16,12 +16,8 @@ import time
 
 import pytest
 
-from app.core.timeseries import (
-    SIGNAL_GROUPS,
-    SIGNAL_METRICS,
-    TimeSeriesStore,
-    extract_device_metrics,
-)
+from app.core.signals import SIGNAL_GROUPS, SIGNAL_METRICS
+from app.core.timeseries import TimeSeriesStore, extract_device_metrics
 
 POD = "TEPOD--1707000-11-J--TG1"
 INV = "TEPINV--1707000-11-J--TG1"
@@ -76,12 +72,28 @@ class TestExtract:
     def test_pw2_signals(self):
         m = extract_device_metrics(
             {"TETHC--1": {"THC_AmbientTemp": 25.5}},
-            {"PVAC--1": {"PVAC_Fan_Speed_Actual_RPM": 2000}},
+            {
+                "PVAC--1": {
+                    "PVAC_Fan_Speed_Actual_RPM": 2000,
+                    "PVAC_Fan_Speed_Target_RPM": 2100,
+                }
+            },
         )
         assert m == {
             ("TETHC--1", "controller_ambient"): 25.5,
             ("PVAC--1", "fan_rpm"): 2000.0,
+            ("PVAC--1", "fan_target_rpm"): 2100.0,
         }
+
+    def test_uses_shared_registry_and_value_check(self):
+        # One vocabulary with MQTT: the store records from app/core/signals.py
+        # and applies its finite-number check (huge ints can't raise)
+        import app.core.timeseries as ts
+        from app.core import signals
+
+        assert ts.SIGNAL_METRICS is signals.SIGNAL_METRICS
+        assert ts.SIGNAL_GROUPS is signals.SIGNAL_GROUPS
+        assert extract_device_metrics({POD: {"HVP_PackTempMax": 10**400}}) == {}
 
     def test_skips_missing_and_bad_values(self):
         m = extract_device_metrics(

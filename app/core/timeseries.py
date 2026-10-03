@@ -27,7 +27,8 @@ Architecture:
 Device signals (Powerwall temperatures and fans):
     Per-device readings (battery pack max/min, shunt and inverter ambient
     temperatures; fan speed and duty cycle) are stored as generic series so
-    a new signal needs only an entry in SIGNAL_METRICS, no schema change:
+    a new signal needs only an entry in SIGNAL_METRICS (app/core/signals.py),
+    no schema change:
 
     - ``device_series``  one row per (gateway, device block, metric), e.g.
       ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
@@ -108,6 +109,13 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.core.signals import (
+    SIGNAL_GROUPS,
+    SIGNAL_METRICS,
+    SIGNAL_TO_METRIC,
+    signal_value,
+)
+
 logger = logging.getLogger(__name__)
 
 # Categories tracked per sample. Sign conventions match PowerwallData:
@@ -136,118 +144,12 @@ MAINTENANCE_INTERVAL = 60.0
 # Minimum seconds between repeated write-failure warnings.
 _FAILURE_WARN_INTERVAL = 300.0
 
-# Signal registry: what gets recorded and how it is shown. Adding a metric
-# (or a whole new chart group) is one entry here, and in SIGNAL_GROUPS for a
-# new group; the History page builds its cards from this catalog with no
-# per-metric code. Metric ids are permanent once released (they are stored).
-#
-# Chart groups, ordered by ``order``. ``zero_based`` starts the y-axis at 0
-# (speeds, duty cycles) instead of fitting the data; ``decimals`` is the
-# precision the page shows.
-SIGNAL_GROUPS: Dict[str, Dict[str, Any]] = {
-    "temperature": {
-        "label": "Powerwall temperatures",
-        "order": 10,
-        "zero_based": False,
-        "decimals": 1,
-    },
-    "fan_speed": {"label": "Fan speed", "order": 20, "zero_based": True, "decimals": 0},
-    "fan_duty": {
-        "label": "Fan duty cycle",
-        "order": 30,
-        "zero_based": True,
-        "decimals": 1,
-    },
-}
-
-# One entry per metric: the pypowerwall vitals / fan_speeds signal names it
-# records (per device block: TEPOD--, TEPINV--, TETHC--, PVAC--, so each
-# Powerwall unit gets its own series), its label, unit, group and order
-# within the group. PCH_heatsinkTemp is deliberately absent: it reads a
-# constant 45.45 °C on current PW3 firmware.
-SIGNAL_METRICS: Dict[str, Dict[str, Any]] = {
-    # Powerwall 3 battery (TEPOD blocks)
-    "pack_temp_max": {
-        "signals": ["HVP_PackTempMax"],
-        "label": "Pack temp (max)",
-        "unit": "°C",
-        "group": "temperature",
-        "order": 10,
-    },
-    "pack_temp_min": {
-        "signals": ["HVP_PackTempMin"],
-        "label": "Pack temp (min)",
-        "unit": "°C",
-        "group": "temperature",
-        "order": 20,
-    },
-    "shunt_temp": {
-        "signals": ["HVP_ShuntTemperature"],
-        "label": "Shunt temp",
-        "unit": "°C",
-        "group": "temperature",
-        "order": 30,
-    },
-    # Powerwall 3 inverter (TEPINV blocks, vitals and fan_speeds)
-    "inverter_ambient": {
-        "signals": ["PCH_AmbientTemp"],
-        "label": "Inverter ambient",
-        "unit": "°C",
-        "group": "temperature",
-        "order": 40,
-    },
-    # Powerwall 2/+ thermal controller (TETHC blocks)
-    "controller_ambient": {
-        "signals": ["THC_AmbientTemp"],
-        "label": "Thermal controller ambient",
-        "unit": "°C",
-        "group": "temperature",
-        "order": 50,
-    },
-    "fan_a_rpm": {
-        "signals": ["PCH_FanSpeed_A"],
-        "label": "Fan A speed",
-        "unit": "rpm",
-        "group": "fan_speed",
-        "order": 10,
-    },
-    "fan_b_rpm": {
-        "signals": ["PCH_FanSpeed_B"],
-        "label": "Fan B speed",
-        "unit": "rpm",
-        "group": "fan_speed",
-        "order": 20,
-    },
-    # Powerwall+ inverter fan (PVAC blocks)
-    "fan_rpm": {
-        "signals": ["PVAC_Fan_Speed_Actual_RPM"],
-        "label": "Fan speed",
-        "unit": "rpm",
-        "group": "fan_speed",
-        "order": 30,
-    },
-    "fan_a_duty": {
-        "signals": ["PCH_FanDuty_A"],
-        "label": "Fan A duty",
-        "unit": "%",
-        "group": "fan_duty",
-        "order": 10,
-    },
-    "fan_b_duty": {
-        "signals": ["PCH_FanDuty_B"],
-        "label": "Fan B duty",
-        "unit": "%",
-        "group": "fan_duty",
-        "order": 20,
-    },
-}
-
-# Derived lookup used when recording: signal name -> metric id.
-_SIGNAL_TO_METRIC: Dict[str, str] = {
-    signal: metric
-    for metric, entry in SIGNAL_METRICS.items()
-    for signal in entry["signals"]
-}
+# Signal registry: what gets recorded and how it is shown lives in
+# app/core/signals.py (SIGNAL_METRICS / SIGNAL_GROUPS), shared with MQTT so
+# history and Home Assistant use one vocabulary. Adding a metric (or a whole
+# new chart group) is an entry there; the History page builds its cards from
+# that catalog with no per-metric code. Metric ids are permanent once
+# released (they are stored).
 
 # Default raw signal retention; also the pruning window when recording is
 # turned off (PW_TIMESERIES_SIGNAL_RETENTION=-1), so old samples still age out.
@@ -290,13 +192,10 @@ def extract_device_metrics(
         for device, signals in payload.items():
             if not isinstance(signals, dict):
                 continue
-            for signal, metric in _SIGNAL_TO_METRIC.items():
-                value = signals.get(signal)
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    continue
-                if value != value or value in (float("inf"), float("-inf")):
-                    continue
-                out[(str(device), metric)] = float(value)
+            for signal, metric in SIGNAL_TO_METRIC.items():
+                value = signal_value(signals.get(signal))
+                if value is not None:
+                    out[(str(device), metric)] = value
     return out
 
 

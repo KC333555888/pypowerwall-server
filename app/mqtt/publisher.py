@@ -76,6 +76,23 @@ Topic layout
     {prefix}/{gateway_id}/meters/remote/{din}/ct{n}/energy_exported  int   — Wh, lifetime
     {prefix}/{gateway_id}/meters/remote/{din}/ct{n}                  JSON  — full per-CT data
 
+    Per-unit device signals (Powerwall temperatures and fan speeds, from
+    vitals + get_fan_speeds(), keyed by unit serial):
+    {prefix}/{gateway_id}/devices/{serial}/temperature/pack_max     float — °C (PW3 battery pack)
+    {prefix}/{gateway_id}/devices/{serial}/temperature/pack_min     float — °C (PW3 battery pack)
+    {prefix}/{gateway_id}/devices/{serial}/temperature/shunt        float — °C (PW3 shunt)
+    {prefix}/{gateway_id}/devices/{serial}/temperature/ambient      float — °C (PW3 inverter ambient)
+    {prefix}/{gateway_id}/devices/{serial}/temperature/controller   float — °C (PW2/2+ TETHC ambient)
+    {prefix}/{gateway_id}/devices/{serial}/fan/a/rpm                int   — rpm (PW3 fan A)
+    {prefix}/{gateway_id}/devices/{serial}/fan/a/duty               float — %   (PW3 fan A duty)
+    {prefix}/{gateway_id}/devices/{serial}/fan/b/rpm                int   — rpm (PW3 fan B)
+    {prefix}/{gateway_id}/devices/{serial}/fan/b/duty               float — %   (PW3 fan B duty)
+    {prefix}/{gateway_id}/devices/{serial}/fan/rpm                  int   — rpm (PW2/2+ fan)
+    {prefix}/{gateway_id}/devices/{serial}/fan/target_rpm           int   — rpm (PW2/2+ fan target)
+    {prefix}/{gateway_id}/devices/{serial}                          JSON  — full per-unit signals
+    Only the signals each unit reports are published - a PW2 unit gets fan
+    rpm but no duty, and an expansion pack gets pack temps but no fans.
+
     Remote-meter lifetime energy is converted from Tesla's watt-seconds to
     whole Wh; the per-CT JSON includes Location ("site" / "solar" / "load").
 
@@ -105,6 +122,9 @@ class MqttPublisher:
         # Per gateway: the optional entities (strings, remote-meter CTs)
         # already announced; a gateway key means base discovery was sent
         self._discovery_sent: Dict[str, frozenset] = {}
+        # Gateways whose per-unit signal extraction last failed: warn once
+        # (with traceback), then log at debug until an extraction succeeds.
+        self._signal_extract_failed: set = set()
         self._backoff: int = 2           # current reconnect backoff in seconds
 
     # ------------------------------------------------------------------
@@ -164,15 +184,19 @@ class MqttPublisher:
                 pass
         logger.info("MQTT publisher stopped.")
 
-    async def _publish_ha_discovery(self, gateway_id: str, status) -> None:
+    async def _publish_ha_discovery(
+        self, gateway_id: str, status, device_signals: dict
+    ) -> None:
         """Publish Home Assistant auto-discovery payloads for a gateway.
 
         Called once per gateway on first connection (tracked in _discovery_sent).
         Re-sent after every broker reconnect so HA re-discovers after restarts.
 
         Args:
-            gateway_id: Gateway identifier.
-            status:     GatewayStatus used to extract name and version.
+            gateway_id:     Gateway identifier.
+            status:         GatewayStatus used to extract name and version.
+            device_signals: Per-unit signals from extract_unit_signals(),
+                            computed once per poll by the caller.
         """
         if not self._connected or self._client is None:
             return
@@ -206,6 +230,7 @@ class MqttPublisher:
                 version=version,
                 string_ids=string_ids,
                 remote_meters=remote_meters or None,
+                device_signals=device_signals or None,
             )
             for topic, payload in payloads:
                 await self._safe_publish(topic, payload, retain=True, qos=settings.mqtt_qos)
@@ -231,21 +256,46 @@ class MqttPublisher:
             return
 
         # Send HA discovery payloads the first time we see this gateway, and
-        # again whenever a snapshot reports strings or remote-meter CTs not
-        # announced yet (re-sent after reconnect too: _discovery_sent is
-        # cleared there). Storing the union means a later snapshot without
-        # them (e.g. a vitals timeout) doesn't re-send.
-        from app.mqtt.ha_discovery import discovery_signature
+        # again whenever a snapshot reports strings, remote-meter CTs or
+        # per-unit device signals not announced yet (re-sent after reconnect
+        # too: _discovery_sent is cleared there). Storing the union means a
+        # later snapshot without them (e.g. a vitals timeout) doesn't re-send.
+        from app.core.signals import (
+            SIGNAL_GROUPS,
+            SIGNAL_METRICS,
+            extract_unit_signals,
+        )
+        from app.mqtt.ha_discovery import DEVICE_METRIC_TOPICS, discovery_signature
 
         data = status.data if status else None
+        # Extract per-unit signals once per poll; discovery signature, HA
+        # discovery and the per-unit topics below all reuse this result.
+        # Guarded: a malformed snapshot must degrade to "no device signals",
+        # never to an exception that would stop the whole gateway's MQTT.
+        device_signals: dict = {}
+        if data:
+            try:
+                device_signals = extract_unit_signals(data.vitals, data.fan_speeds)
+                self._signal_extract_failed.discard(gateway_id)
+            except Exception:
+                first = gateway_id not in self._signal_extract_failed
+                self._signal_extract_failed.add(gateway_id)
+                logger.log(
+                    logging.WARNING if first else logging.DEBUG,
+                    "Per-unit signal extraction failed for gateway '%s'",
+                    gateway_id,
+                    exc_info=True,
+                )
         signature = discovery_signature(
-            data.strings if data else None, data.vitals if data else None
+            data.strings if data else None,
+            data.vitals if data else None,
+            device_signals,
         )
         announced = self._discovery_sent.get(gateway_id)
         if announced is None or not signature <= announced:
             from app.config import settings  # late import
             if settings.mqtt_ha_discovery:
-                await self._publish_ha_discovery(gateway_id, status)
+                await self._publish_ha_discovery(gateway_id, status, device_signals)
             self._discovery_sent[gateway_id] = (announced or frozenset()) | signature
 
         try:
@@ -534,6 +584,41 @@ class MqttPublisher:
                             await self._safe_publish(
                                 ct_prefix, json.dumps(fields), retain, qos
                             )
+
+                # Per-unit device signal topics (Powerwall temperatures
+                # and fan speeds, keyed by unit serial — the same units as
+                # the web console's Powerwall Status table). Uses the
+                # signals extracted once per poll above.
+                for serial, signals in device_signals.items():
+                    device_prefix = f"{prefix}/devices/{serial}"
+                    rounded: dict = {}
+                    for metric_id, value in signals.items():
+                        entry = DEVICE_METRIC_TOPICS.get(metric_id)
+                        if entry is None:
+                            continue
+                        topic_suffix = entry[0]
+                        # Precision comes from the registry (SIGNAL_GROUPS
+                        # decimals), one rounding for both the topic text
+                        # and the per-unit JSON below; "+ 0.0" keeps -0.04
+                        # from publishing as "-0.0". Whole numbers (d == 0)
+                        # go into the JSON as ints.
+                        decimals = SIGNAL_GROUPS[SIGNAL_METRICS[metric_id]["group"]][
+                            "decimals"
+                        ]
+                        rounded_value = round(value, decimals) + 0.0
+                        rounded[metric_id] = (
+                            int(rounded_value) if decimals == 0 else rounded_value
+                        )
+                        await self._safe_publish(
+                            f"{device_prefix}/{topic_suffix}",
+                            f"{rounded_value:.{decimals}f}",
+                            retain,
+                            qos,
+                        )
+                    # Full per-unit JSON for consumers that want everything
+                    await self._safe_publish(
+                        device_prefix, json.dumps(rounded), retain, qos
+                    )
 
                 # Summary JSON topic
                 summary = {
