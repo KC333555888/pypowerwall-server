@@ -126,11 +126,19 @@ def _epoch_query(description: str) -> Any:
 
 
 def _powerwall_labels() -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """Powerwall numbering per gateway, from each gateway's cached status."""
+    """Powerwall numbering per gateway, from each gateway's last good poll.
+
+    Uses the last successful data rather than the cached status, which
+    drops its data once an outage outlasts PW_CACHE_TTL: without the
+    battery list every unit would be renumbered by serial (PW1 and PW2
+    could swap), so a bookmarked ``pw=PW2`` would show another unit.
+    """
     labels: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for gateway_id in gateway_manager.gateways:
-        status = gateway_manager.get_gateway(gateway_id)
-        data = status.data if status else None
+        data = gateway_manager.get_last_data(gateway_id)
+        if data is None:
+            status = gateway_manager.get_gateway(gateway_id)
+            data = status.data if status else None
         labels[gateway_id] = powerwall_unit_labels(
             getattr(data, "system_status", None),
             getattr(data, "tedapi_config", None),

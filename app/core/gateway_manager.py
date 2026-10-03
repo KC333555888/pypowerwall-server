@@ -1873,6 +1873,21 @@ class GatewayManager:
                     gateway_id, exc,
                 )
 
+    def get_last_data(self, gateway_id: str) -> Optional[PowerwallData]:
+        """Last successfully polled data for a gateway, however old.
+
+        Unlike get_gateway(), this ignores PW_CACHE_TTL, so it suits facts
+        that don't change while the gateway is offline (e.g. which battery
+        is PW1). Read-only: callers must not modify it.
+
+        Args:
+            gateway_id: Gateway identifier
+
+        Returns:
+            The last successful PowerwallData, or None before the first one.
+        """
+        return self._last_successful_data.get(gateway_id)
+
     def get_gateway(self, gateway_id: str) -> Optional[GatewayStatus]:
         """Get status for a specific gateway with graceful degradation support.
 

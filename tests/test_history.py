@@ -579,6 +579,44 @@ class TestPowerwallNumbering:
         labels = [(s["powerwall"], s["powerwall_order"]) for s in result["series"]]
         assert labels == [("PW1", 100), ("PW1", 100), ("PW3", 300)]
 
+    def test_labels_survive_cache_expiry(self, mock_gateway_manager):
+        """An outage longer than PW_CACHE_TTL must not renumber the units."""
+        import app.api.timeseries as api
+        from app.models.gateway import Gateway, GatewayStatus, PowerwallData
+
+        gw = Gateway(id="gw1", name="G", host="1.2.3.4", gw_pwd="x")
+        mock_gateway_manager.gateways["gw1"] = gw
+        # PW1 sorts after PW2 by serial, so numbering by serial would swap them
+        data = PowerwallData(
+            system_status={
+                "battery_blocks": [
+                    {"PackageSerialNumber": "TG1ZZZ"},
+                    {"PackageSerialNumber": "TG1AAA"},
+                ]
+            },
+            timestamp=time.time(),
+        )
+        expected = {
+            "TG1ZZZ": {"label": "PW1", "order": 100},
+            "TG1AAA": {"label": "PW2", "order": 200},
+        }
+        mock_gateway_manager.cache["gw1"] = GatewayStatus(
+            gateway=gw, online=True, data=data
+        )
+        mock_gateway_manager._last_successful_data["gw1"] = data
+        assert api._powerwall_labels() == {"gw1": expected}
+        # Offline past the cache TTL: the cached status has no data left
+        data.timestamp = time.time() - 3600
+        mock_gateway_manager.cache["gw1"] = GatewayStatus(gateway=gw, online=False)
+        assert mock_gateway_manager.get_gateway("gw1").data is None
+        assert api._powerwall_labels() == {"gw1": expected}
+        # Before any successful poll the cached status is the fallback
+        mock_gateway_manager._last_successful_data.clear()
+        mock_gateway_manager.cache["gw1"] = GatewayStatus(
+            gateway=gw, online=True, data=data
+        )
+        assert api._powerwall_labels() == {"gw1": expected}
+
 
 class TestSignalTrendBounds:
     @pytest.mark.parametrize(
