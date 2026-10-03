@@ -296,7 +296,7 @@ Raise it if a slow local gateway logs poll timeouts.
 PW_TIMESERIES_RETENTION=24h            # Raw 5s sample retention (default: 24h)
 PW_TIMESERIES_DAILY_RETENTION=0        # Daily kWh aggregate retention (default: 0 = unlimited)
 PW_TIMESERIES_PATH=/data/timeseries.db  # SQLite path (default: /data/timeseries.db if /data exists)
-PW_TIMESERIES_SIGNAL_RETENTION=30d     # Temperature/fan sample retention (default: 30d; -1 = don't record)
+PW_TIMESERIES_SIGNAL_RETENTION=30d     # Temperature/fan sample retention (default: 30d; 0 = unlimited; -1 = don't record)
 PW_TIMESERIES_SIGNAL_INTERVAL=60s      # Seconds between temperature/fan samples (default: 60s; minimum 30s)
 ```
 The server records every poll cycle's power readings to a local SQLite

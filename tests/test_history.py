@@ -402,6 +402,7 @@ class TestDeviceTrend:
             store = store_for(tmp_path, signal_interval="5s")
         assert store._signal_interval == 30
         assert "below the 30s minimum" in caplog.text
+        assert "invalid" not in caplog.text
         now = time.time()
         metrics = {("TEPOD--1", "pack_temp_max"): 25.0}
         stored = [
@@ -409,6 +410,15 @@ class TestDeviceTrend:
             for i in range(7)
         ]
         assert stored == [True] + [False] * 5 + [True]
+
+    @pytest.mark.parametrize("value", ["0", "-1", "-30s", 0, -5])
+    def test_invalid_interval_uses_default(self, tmp_path, caplog, value):
+        with caplog.at_level("WARNING"):
+            store = store_for(tmp_path, signal_interval=value)
+        assert store._signal_interval == 60
+        assert "is invalid" in caplog.text
+        assert "using the default 60s" in caplog.text
+        assert "minimum" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_series_listing(self, tmp_path):

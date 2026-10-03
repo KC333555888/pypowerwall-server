@@ -162,6 +162,10 @@ _FAILURE_WARN_INTERVAL = 300.0
 # turned off (PW_TIMESERIES_SIGNAL_RETENTION=-1), so old samples still age out.
 SIGNAL_DEFAULT_RETENTION = "30d"
 
+# Default temperature/fan sample interval; also used when the setting is
+# zero or negative.
+SIGNAL_DEFAULT_INTERVAL = "60s"
+
 # Shortest temperature/fan sample interval. These signals change slowly and
 # finer sampling costs real disk (and SD-card wear) for little insight: at
 # 30s a Powerwall 3 uses ~24 MB per 30 days; 5s would be ~145 MB.
@@ -320,7 +324,8 @@ class TimeSeriesStore:
                              0 means unlimited.
             signal_interval: Minimum seconds between signal samples
                              per gateway (floor SIGNAL_MIN_INTERVAL, 30s;
-                             lower values are raised with a warning).
+                             lower values are raised with a warning, and
+                             zero or negative values use the 60s default).
         """
         self._db_path = self._resolve_db_path(str(db_path))
         self._retention = self._coerce(retention, "24h", "PW_TIMESERIES_RETENTION")
@@ -330,8 +335,18 @@ class TimeSeriesStore:
         self._signal_retention = self._coerce(
             signal_retention, SIGNAL_DEFAULT_RETENTION, "PW_TIMESERIES_SIGNAL_RETENTION"
         )
-        interval = self._coerce(signal_interval, "60s", "PW_TIMESERIES_SIGNAL_INTERVAL")
-        if interval < SIGNAL_MIN_INTERVAL:
+        interval = self._coerce(
+            signal_interval, SIGNAL_DEFAULT_INTERVAL, "PW_TIMESERIES_SIGNAL_INTERVAL"
+        )
+        if interval <= 0:
+            logger.warning(
+                "PW_TIMESERIES_SIGNAL_INTERVAL=%s is invalid (it must be a "
+                "positive duration); using the default %s",
+                signal_interval,
+                SIGNAL_DEFAULT_INTERVAL,
+            )
+            interval = parse_duration(SIGNAL_DEFAULT_INTERVAL)
+        elif interval < SIGNAL_MIN_INTERVAL:
             logger.warning(
                 "PW_TIMESERIES_SIGNAL_INTERVAL=%ss is below the %ss minimum; "
                 "using %ss",
