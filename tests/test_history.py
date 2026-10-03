@@ -478,6 +478,28 @@ class TestDeviceTimezones:
         assert series["points"][0]["ts"] == self._ts("2026-03-10", 12, tz)
 
     @pytest.mark.asyncio
+    async def test_daily_window_end_uses_gateway_local_day(self, make_store):
+        tz = "America/Los_Angeles"  # evening local = next UTC day
+        store = make_store(signal_interval="60s")
+        for day, value in (("2026-03-10", 10.0), ("2026-03-11", 20.0)):
+            await store.record_signal_sample(
+                "gw1",
+                self._ts(day, 12, tz),
+                {(POD, "pack_temp_max"): value},
+                timezone=tz,
+            )
+        body = await store.get_signal_trend(
+            metrics=["pack_temp_max"],
+            start=self._ts("2026-03-10", 0, tz),
+            end=self._ts("2026-03-10", 20, tz),
+            resolution="daily",
+            timezones={"gw1": tz},
+        )
+        (series,) = body["series"]
+        # 20:00 local is already 03-11 in UTC; that local day isn't in range
+        assert [p["day"] for p in series["points"]] == ["2026-03-10"]
+
+    @pytest.mark.asyncio
     async def test_auto_resolution_judges_days_in_local_time(self, tmp_path):
         tz = "America/Los_Angeles"  # evening local = next UTC day
         store = store_for(tmp_path, signal_interval="60s")
@@ -636,6 +658,50 @@ class TestPowerwallNumbering:
         labels = [(s["powerwall"], s["powerwall_order"]) for s in result["series"]]
         assert labels == [("PW1", 100), ("PW1", 100), ("PW3", 300)]
 
+    def test_labels_count_every_pod_block(self):
+        """/pod numbers by position, so unusable blocks still take a number."""
+        from app.api.legacy import powerwall_unit_labels
+
+        system_status = {
+            "battery_blocks": [
+                "not-a-block",
+                {"Type": "Powerwall"},  # no serial
+                {"PackageSerialNumber": "TG1A"},
+                None,
+                {"PackageSerialNumber": ""},
+                {"PackageSerialNumber": "TG1B"},
+            ]
+        }
+        assert powerwall_unit_labels(system_status, None) == {
+            "TG1A": {"label": "PW3", "order": 300},
+            "TG1B": {"label": "PW6", "order": 600},
+        }
+
+    def test_unknown_serial_follows_highest_unit(self, monkeypatch):
+        import app.api.timeseries as api
+
+        # Two known units numbered up to 3: next is PW4, not PW3 (= count + 1)
+        monkeypatch.setattr(
+            api,
+            "_powerwall_labels",
+            lambda: {
+                "gw1": {
+                    "TG1EXP1": {"label": "PW1 Exp 1", "order": 101},
+                    "TG1FOLLOW": {"label": "PW3", "order": 300},
+                }
+            },
+        )
+        result = api._annotate_powerwalls(
+            {
+                "series": [
+                    {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1NEW"},
+                    {"gateway": "gw1", "device": "TEPOD--1707000-11-J--TG1FOLLOW"},
+                ]
+            }
+        )
+        labels = [(s["powerwall"], s["powerwall_order"]) for s in result["series"]]
+        assert labels == [("PW4", 400), ("PW3", 300)]
+
     def test_labels_survive_cache_expiry(self, mock_gateway_manager):
         """An outage longer than PW_CACHE_TTL must not renumber the units."""
         import app.api.timeseries as api
@@ -778,6 +844,32 @@ class TestHistoryAPI:
         assert client.get("/api/timeseries/daily?start=2026-02-31").status_code == 422
         assert client.get("/api/timeseries/daily?end=2026-13-01").status_code == 422
         assert client.get("/api/timeseries/daily?start=2024-02-29").status_code == 200
+
+    @pytest.mark.parametrize("param", ["start", "end"])
+    def test_daily_rejects_basic_format_dates(self, client, monkeypatch, param):
+        """YYYYMMDD is rejected even where date.fromisoformat accepts it.
+
+        Python 3.11+ (the Docker image runs 3.12) parses "20260101", so the
+        YYYY-MM-DD pattern is the only guard there. Use that parser on every
+        version so this test can't pass on 3.10's stricter one.
+        """
+        from datetime import date, datetime
+
+        import app.api.timeseries as api
+
+        class Py312Date:
+            @staticmethod
+            def fromisoformat(value):
+                if len(value) == 8 and value.isdigit():
+                    return datetime.strptime(value, "%Y%m%d").date()
+                return date.fromisoformat(value)
+
+        monkeypatch.setattr(api, "date", Py312Date)
+        resp = client.get(f"/api/timeseries/daily?{param}=20260101")
+        assert resp.status_code == 422
+        assert (
+            client.get(f"/api/timeseries/daily?{param}=2026-01-01").status_code == 200
+        )
 
     def test_signals_endpoint(self, client):
         body = client.get("/api/timeseries/signals").json()
@@ -1025,6 +1117,19 @@ class TestTrendWindow:
         (series,) = body["series"]
         assert len(series["points"]) == 2  # days after the window excluded
         await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_raw_upper_bound(self, make_store):
+        store = make_store(signal_interval="60s")
+        now = time.time()
+        for ts, value in ((now - 1800, 30.0), (now - 60, 99.0)):
+            await store.record_signal_sample("gw1", ts, {(POD, "pack_temp_max"): value})
+        body = await store.get_signal_trend(
+            start=now - 3600, end=now - 600, resolution="raw"
+        )
+        (series,) = body["series"]
+        # The sample after the window's end is excluded
+        assert [p["avg"] for p in series["points"]] == [30.0]
 
     @pytest.mark.asyncio
     async def test_start_end_swapped(self, tmp_path):
