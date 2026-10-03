@@ -507,6 +507,53 @@ class TestSeriesCache:
         await store.stop()
 
 
+class TestCatalogAndSchema:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retention", ["24h", "-1"])
+    async def test_catalog_is_a_copy(self, make_store, retention):
+        store = make_store(retention=retention)  # enabled and disabled
+        info = await store.get_signal_series()
+        info["metrics"]["pack_temp_max"]["label"] = "changed"
+        info["metrics"].clear()
+        info["groups"]["temperature"].clear()
+        assert SIGNAL_METRICS["pack_temp_max"]["label"] == "Pack temp (max)"
+        assert SIGNAL_GROUPS["temperature"]
+        info = await store.get_signal_series()
+        assert info["metrics"] == SIGNAL_METRICS
+        assert info["groups"] == SIGNAL_GROUPS
+
+    @pytest.mark.asyncio
+    async def test_series_table_stores_no_unit(self, make_store):
+        store = make_store()
+        await store.get_signal_series()  # create schema
+        columns = [
+            row["name"]
+            for row in store._ensure_conn().execute("PRAGMA table_info(device_series)")
+        ]
+        assert columns == ["series_id", "gateway_id", "device", "metric"]
+
+    @pytest.mark.asyncio
+    async def test_dev_database_with_unit_column_still_records(
+        self, make_store, tmp_path
+    ):
+        # A database from an earlier build of this feature kept a unit column
+        conn = sqlite3.connect(str(tmp_path / "ts.db"))
+        conn.execute(
+            "CREATE TABLE device_series (series_id INTEGER PRIMARY KEY, "
+            "gateway_id TEXT NOT NULL, device TEXT NOT NULL, "
+            "metric TEXT NOT NULL, unit TEXT, UNIQUE (gateway_id, device, metric))"
+        )
+        conn.commit()
+        conn.close()
+        store = make_store(signal_interval="60s")
+        stored = await store.record_signal_sample(
+            "gw1", time.time(), {(POD, "pack_temp_max"): 30.0}
+        )
+        assert stored is True
+        (series,) = (await store.get_signal_series())["series"]
+        assert series["unit"] == "°C"
+
+
 class TestPowerwallNumbering:
     """Units are numbered by the /pod index, exactly like /pod and the Console."""
 

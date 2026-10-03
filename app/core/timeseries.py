@@ -31,7 +31,8 @@ Device signals (Powerwall temperatures and fans):
     no schema change:
 
     - ``device_series``  one row per (gateway, device block, metric), e.g.
-      ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max", "°C").
+      ("default", "TEPOD--1707000-11-J--TG1...", "pack_temp_max"). Units
+      and labels come from SIGNAL_METRICS, not the table.
     - ``device_samples`` (series_id, ts, value), recorded at most every
       PW_TIMESERIES_SIGNAL_INTERVAL (default 60s; 30s minimum for finer
       detail) and pruned to PW_TIMESERIES_SIGNAL_RETENTION (default 30d).
@@ -100,6 +101,7 @@ Environment Variables:
 """
 
 import asyncio
+import copy
 import logging
 import os
 import sqlite3
@@ -565,7 +567,6 @@ class TimeSeriesStore:
                     gateway_id TEXT NOT NULL,
                     device TEXT NOT NULL,
                     metric TEXT NOT NULL,
-                    unit TEXT,
                     UNIQUE (gateway_id, device, metric)
                 );
                 CREATE TABLE IF NOT EXISTS device_samples (
@@ -1021,13 +1022,17 @@ class TimeSeriesStore:
         return await self._run_query(partial(self._get_signal_series_sync, gateway))
 
     def _signal_series_base(self) -> Dict[str, Any]:
-        """Keys shared by every get_signal_series() response."""
+        """Keys shared by every get_signal_series() response.
+
+        The catalog is copied: callers may change the response, and the
+        shared registry must never change with it.
+        """
         return {
             "enabled": True,
             "signals_enabled": self.signals_enabled,
             "interval_seconds": self._signal_interval,
-            "metrics": SIGNAL_METRICS,
-            "groups": SIGNAL_GROUPS,
+            "metrics": copy.deepcopy(SIGNAL_METRICS),
+            "groups": copy.deepcopy(SIGNAL_GROUPS),
         }
 
     def _get_signal_series_sync(self, gateway: Optional[str]) -> Dict[str, Any]:
