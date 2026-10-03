@@ -42,8 +42,10 @@ disabled (PW_TIMESERIES_RETENTION=-1) so clients can hide the UI panel
 instead of erroring.
 
 Design Notes:
-    - All reads go through the store's single worker thread — they never
-      block or contend with the poll loop's writes (WAL mode).
+    - Reads run off the event loop on the store's read lane: a read-only
+      connection on its own worker thread, so with WAL they never wait
+      behind (or delay) the poll loop's writes. Without it (no WAL, or the
+      read-only open failed) they share the writer's thread.
     - Endpoints return immediately; missing data yields empty lists, not
       errors, matching the degraded-gracefully style of the other APIs.
 """

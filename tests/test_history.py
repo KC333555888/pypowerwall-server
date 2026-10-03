@@ -10,11 +10,14 @@ Covers:
     - /api/timeseries/daily start/end range
     - /api/timeseries/signals and /api/timeseries/signal_trend endpoints
     - Poll-loop wiring and the /history route
+    - Read lane: read-only, WAL and open fallbacks, shutdown; /status safety
 """
 
+import sqlite3
 import time
 
 import pytest
+import pytest_asyncio
 
 from app.core.signals import SIGNAL_GROUPS, SIGNAL_METRICS
 from app.core.timeseries import TimeSeriesStore, extract_device_metrics
@@ -43,6 +46,24 @@ PW3_FANS = {
 
 def store_for(tmp_path, **kwargs):
     return TimeSeriesStore(db_path=str(tmp_path / "ts.db"), **kwargs)
+
+
+@pytest_asyncio.fixture
+async def make_store(tmp_path):
+    """store_for() whose stores are always stopped, even when a test fails.
+
+    Leaves no worker threads or SQLite connections behind.
+    """
+    stores = []
+
+    def make(**kwargs):
+        store = store_for(tmp_path, **kwargs)
+        stores.append(store)
+        return store
+
+    yield make
+    for store in stores:
+        await store.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1183,3 +1204,169 @@ class TestReadLane:
         assert (await store.get_samples(gateway="gw1"))["count"] == 2
         assert store._read_conn is None and store._read_executor is None
         await store.stop()
+
+    @pytest.mark.asyncio
+    async def test_read_connection_is_read_only(self, make_store):
+        store = make_store()
+        await store.record_sample("gw1", time.time(), 1000, 500, 0, -500)
+        assert (await store.get_samples())["count"] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            store._read_conn.execute("DELETE FROM samples")
+
+    @pytest.mark.asyncio
+    async def test_read_connection_busy_timeout(self, make_store):
+        store = make_store()
+        await store.get_samples()
+        # 5 s, not the 10 s connect() timeout it would otherwise inherit
+        busy = store._read_conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert busy == 5000
+
+    @pytest.mark.asyncio
+    async def test_failed_read_only_open_uses_writer_lane(
+        self, make_store, monkeypatch, caplog
+    ):
+        import app.core.timeseries as ts_mod
+
+        real_connect = sqlite3.connect
+        attempts = []
+
+        def connect(*args, **kwargs):
+            if kwargs.get("uri"):  # the read-only open
+                attempts.append(args[0])
+                raise sqlite3.OperationalError("unable to open database file")
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr(ts_mod.sqlite3, "connect", connect)
+        store = make_store()
+        now = time.time()
+        await store.record_sample("gw1", now - 30, 1000, 500, 0, -500)
+        await store.record_sample("gw1", now, 1000, 500, 0, -500)
+        with caplog.at_level("WARNING", logger="app.core.timeseries"):
+            assert (await store.get_samples(gateway="gw1"))["count"] == 2
+            assert (await store.status())["samples"] == 2
+        assert len(attempts) == 1  # not retried on every query
+        assert store._read_conn is None
+        assert store._query_executor() is store._executor  # the writer lane
+        warned = [r for r in caplog.records if "read-only open" in r.getMessage()]
+        assert [r.levelname for r in warned] == ["WARNING"]
+
+    @pytest.mark.asyncio
+    async def test_without_wal_reads_use_writer_lane(
+        self, make_store, monkeypatch, caplog
+    ):
+        import app.core.timeseries as ts_mod
+
+        class NoWal(sqlite3.Connection):
+            """A filesystem that refuses WAL: journal_mode stays "delete"."""
+
+            def execute(self, sql, *args):
+                if sql.startswith("PRAGMA journal_mode"):
+                    sql = "PRAGMA journal_mode"
+                return super().execute(sql, *args)
+
+        real_connect = sqlite3.connect
+        monkeypatch.setattr(
+            ts_mod.sqlite3,
+            "connect",
+            lambda *args, **kwargs: real_connect(*args, factory=NoWal, **kwargs),
+        )
+        store = make_store()
+        now = time.time()
+        with caplog.at_level("WARNING", logger="app.core.timeseries"):
+            await store.record_sample("gw1", now - 30, 1000, 500, 0, -500)
+            await store.record_sample("gw1", now, 1000, 500, 0, -500)
+            assert (await store.get_samples(gateway="gw1"))["count"] == 2
+            assert (await store.status())["samples"] == 2
+        assert store._read_conn is None and store._read_executor is None
+        warned = [r for r in caplog.records if "WAL" in r.getMessage()]
+        assert [r.levelname for r in warned] == ["WARNING"]
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_read_lane_and_wal_files(self, make_store, tmp_path):
+        store = make_store()
+        await store.record_sample("gw1", time.time(), 1000, 500, 0, -500)
+        assert (await store.get_samples())["count"] == 1
+        read_conn, read_executor = store._read_conn, store._read_executor
+        wal, shm = tmp_path / "ts.db-wal", tmp_path / "ts.db-shm"
+        assert wal.exists() and shm.exists()
+        await store.stop()
+        with pytest.raises(sqlite3.ProgrammingError):
+            read_conn.execute("SELECT 1")  # really closed, not just dropped
+        with pytest.raises(RuntimeError):
+            read_executor.submit(time.time)  # shut down
+        # Closing the reader first lets the writer remove the WAL files
+        assert not wal.exists() and not shm.exists()
+
+    @pytest.mark.asyncio
+    async def test_stopped_store_never_reopens(self, make_store):
+        store = make_store(signal_interval="60s")
+        now = time.time()
+        await store.record_sample("gw1", now - 30, 1000, 500, 0, -500)
+        assert (await store.get_samples())["count"] == 1
+        await store.stop()
+
+        class NoLock:
+            def __enter__(self):
+                raise AssertionError("a query after stop() took a store lock")
+
+            def __exit__(self, *exc):
+                return False
+
+        # Late queries run on the event loop, so they must not wait on a lock
+        locks = store._lock, store._read_lock
+        store._lock = store._read_lock = NoLock()
+        try:
+            metrics = {(POD, "pack_temp_max"): 30.0}
+            assert await store.record_sample("gw1", now, 1000, 500, 0, -500) is None
+            assert await store.record_signal_sample("gw1", now, metrics) is False
+            assert (await store.get_samples())["samples"] == []
+            assert (await store.get_daily_energy())["days"] == []
+            assert (await store.get_trend())["points"] == []
+            assert (await store.get_signal_series())["series"] == []
+            assert (await store.get_signal_trend())["series"] == []
+            assert await store.get_today("gw1") is None
+            status = await store.status()
+            assert status["samples"] == 0 and status["write_failures"] == 0
+            await store.maintenance()
+            await store.start()
+        finally:
+            store._lock, store._read_lock = locks
+        assert store._conn is None and store._read_conn is None
+        assert store._executor is None and store._read_executor is None
+        assert store._maintenance_task is None
+
+
+class TestStatus:
+    """/status reports zeros, never creating or failing on the database."""
+
+    @pytest.mark.asyncio
+    async def test_status_does_not_create_database(self, make_store, tmp_path):
+        store = make_store()
+        status = await store.status()
+        assert status["samples"] == 0 and status["db_size_bytes"] == 0
+        assert not (tmp_path / "ts.db").exists()
+
+    @pytest.mark.asyncio
+    async def test_status_when_database_dir_cannot_be_created(self, tmp_path):
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("")  # a file where the directory should be
+        store = TimeSeriesStore(db_path=str(blocker / "data" / "ts.db"))
+        status = await store.status()
+        assert status["enabled"] is True and status["samples"] == 0
+        await store.stop()
+
+    def test_status_endpoint_when_database_dir_cannot_be_created(
+        self, client, monkeypatch, tmp_path
+    ):
+        import app.core.timeseries as ts_mod
+        from app.config import settings
+
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("")
+        monkeypatch.setattr(
+            settings, "timeseries_path", str(blocker / "data" / "ts.db")
+        )
+        ts_mod.reset_timeseries_store()
+        resp = client.get("/api/timeseries/status")
+        assert resp.status_code == 200
+        assert resp.json()["samples"] == 0

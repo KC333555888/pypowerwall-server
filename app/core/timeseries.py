@@ -63,13 +63,18 @@ Thread safety:
     - Read lane: the API queries (/daily, /trend, /samples, /signals,
       /signal_trend and the /status counts) run on a second worker thread
       ("timeseries-read") with a read-only connection
-      (file:...?mode=ro), guarded by its own lock. They never take the
-      writer's RLock, and WAL mode lets them read while the writer writes,
-      so a long history query can't delay recording.
-    For ":memory:" databases (tests), or if a read-only open fails, queries
-    fall back to the writer lane. Query sizes stay bounded (raw signal
-    reads switch to daily rollups), which keeps reads short and WAL
-    checkpoints moving.
+      (file:...?mode=ro), guarded by its own lock. The lane takes the
+      writer's RLock only once, when it first opens, so the writer can
+      create the database and tables; after that queries never take it,
+      and WAL mode lets them read while the writer writes, so a long
+      history query can't delay recording.
+    For ":memory:" databases (tests), when WAL can't be enabled (a reader
+    would then block the writer's commits), or if a read-only open fails,
+    queries fall back to the writer lane (logged once at warning). Query
+    sizes stay bounded (raw signal reads switch to daily rollups), which
+    keeps reads short and WAL checkpoints moving.
+    After stop(), recording is a no-op and queries return their empty
+    results without reopening connections or threads.
 
 Environment Variables:
     PW_TIMESERIES_RETENTION       Raw sample retention (default "24h").
@@ -164,9 +169,10 @@ SIGNAL_MIN_INTERVAL = 30
 # read the daily min/avg/max rollups instead.
 SIGNAL_RAW_MAX_SPAN = 14 * 86400.0
 
-# Most raw sample rows one signal-trend query may scan. Queries hold the
-# store's lock and its single worker thread, so an unbounded raw read would
-# queue power-sample writes behind it; larger requests read daily rollups.
+# Most raw sample rows one signal-trend query may scan. Queries share one
+# read-lane thread (or the writer lane when there is none), so an unbounded
+# raw read would queue other queries behind it and hold back WAL
+# checkpoints; larger requests read daily rollups.
 SIGNAL_RAW_MAX_ROWS = 500_000
 
 
@@ -350,12 +356,15 @@ class TimeSeriesStore:
         self._series_ids: Dict[Tuple[str, str, str], int] = {}
         # Read lane: a second, read-only connection on its own thread so
         # queries never wait behind (or block) recording. WAL mode lets it
-        # read while the writer writes. Unavailable for ":memory:" or when a
-        # read-only open fails; queries then share the writer lane.
+        # read while the writer writes. Unavailable for ":memory:", without
+        # WAL, or when a read-only open fails; queries then share the
+        # writer lane.
         self._read_conn: Optional[sqlite3.Connection] = None
         self._read_executor: Optional[ThreadPoolExecutor] = None
         self._read_lock = threading.Lock()
         self._read_unavailable = self._db_path == ":memory:"
+        # Set by stop(): nothing reopens connections or threads afterwards.
+        self._closed = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -423,6 +432,18 @@ class TimeSeriesStore:
             return self._ensure_executor()
         return self._ensure_read_executor()
 
+    async def _run_query(self, func: Callable[[], Any]) -> Any:
+        """Run one API query off the event loop, on the query lane.
+
+        After stop() the query runs inline instead: its connection refuses
+        to reopen, so it returns its empty result at once without starting
+        the lanes' threads again.
+        """
+        if self._closed:
+            return func()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._query_executor(), func)
+
     def _ensure_read_conn(self) -> Optional[sqlite3.Connection]:
         """Open (lazily) the read-only connection. Caller holds _read_lock.
 
@@ -437,8 +458,11 @@ class TimeSeriesStore:
             try:
                 with self._lock:
                     self._ensure_conn()  # database file and tables exist
-            except sqlite3.Error:
+            except (sqlite3.Error, OSError):
                 return None  # writer can't open either; retry next query
+            if self._read_unavailable:
+                return None  # the writer found no WAL support
+            conn = None
             try:
                 uri = f"file:{quote(os.path.abspath(self._db_path))}?mode=ro"
                 conn = sqlite3.connect(
@@ -449,7 +473,13 @@ class TimeSeriesStore:
                 conn.execute("SELECT 1 FROM samples LIMIT 1")
                 self._read_conn = conn
             except sqlite3.Error as e:
-                logger.debug("TimeSeriesStore read-only open failed: %s", e)
+                if conn is not None:
+                    conn.close()
+                logger.warning(
+                    "TimeSeriesStore read-only open failed (%s); history "
+                    "queries fall back to the writer lane",
+                    e,
+                )
                 self._read_unavailable = True
         return self._read_conn
 
@@ -457,13 +487,16 @@ class TimeSeriesStore:
     def _reader(self) -> Iterator[Callable[[], sqlite3.Connection]]:
         """Hold a lane for one query and yield a function returning its connection.
 
-        The read lane (read-only connection + its own lock) never takes the
-        writer's RLock, so a long query can't delay recording. Without it
-        (":memory:", or a failed read-only open) this falls back to the
-        writer connection under the writer lock, as before. Yielding an
-        opener keeps open errors inside each caller's ``except
-        sqlite3.Error``.
+        The read lane (read-only connection + its own lock) takes the
+        writer's RLock only to open, so a long query can't delay recording.
+        Without it (":memory:", no WAL, or a failed read-only open) this
+        falls back to the writer connection under the writer lock, as
+        before. Yielding an opener keeps open errors inside each caller's
+        ``except sqlite3.Error``.
         """
+        if self._closed:
+            yield self._ensure_conn  # raises: no reopening after stop()
+            return
         if not self._read_unavailable:
             with self._read_lock:
                 conn = self._ensure_read_conn()
@@ -474,14 +507,30 @@ class TimeSeriesStore:
             yield self._ensure_conn
 
     def _ensure_conn(self) -> sqlite3.Connection:
-        """Open (lazily) and return the SQLite connection. Caller holds the lock."""
+        """Open (lazily) and return the SQLite connection. Caller holds the lock.
+
+        Raises sqlite3.ProgrammingError after stop(), so a late query gets
+        its empty result instead of reopening the database.
+        """
+        if self._closed:
+            raise sqlite3.ProgrammingError("TimeSeriesStore is closed")
         if self._conn is None:
             directory = os.path.dirname(self._db_path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
             conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10.0)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if str(mode).lower() != "wal" and not self._read_unavailable:
+                # Without WAL a reader blocks the writer's commits: keep
+                # queries on the writer lane, serialized with recording.
+                logger.warning(
+                    "TimeSeriesStore could not enable WAL on %s (journal mode "
+                    "%r); history queries share the writer lane",
+                    self._db_path,
+                    mode,
+                )
+                self._read_unavailable = True
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.executescript("""
@@ -550,7 +599,7 @@ class TimeSeriesStore:
                 """)
             conn.commit()
             self._conn = conn
-            logger.debug("TimeSeriesStore opened %s (WAL mode)", self._db_path)
+            logger.debug("TimeSeriesStore opened %s (%s mode)", self._db_path, mode)
         return self._conn
 
     # ------------------------------------------------------------------
@@ -587,9 +636,9 @@ class TimeSeriesStore:
 
         Returns:
             The updated daily-energy row for the gateway's current local day
-            (or None when the store is disabled / sample skipped).
+            (or None when the store is disabled or stopped / sample skipped).
         """
-        if not self.enabled:
+        if not self.enabled or self._closed:
             return None
         values = {
             "solar": max(0.0, float(solar_w or 0.0)),
@@ -818,7 +867,7 @@ class TimeSeriesStore:
         Returns:
             True when the snapshot was stored.
         """
-        if not self.signals_enabled or not metrics:
+        if not self.signals_enabled or not metrics or self._closed:
             return False
         # Poll timing jitters by a second or two; don't let a gap just short
         # of the interval (e.g. 59.9s at 60s) push the sample to the next poll.
@@ -969,10 +1018,7 @@ class TimeSeriesStore:
         """
         if not self.enabled:
             return {**self._signal_series_base(), "enabled": False, "series": []}
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._query_executor(), partial(self._get_signal_series_sync, gateway)
-        )
+        return await self._run_query(partial(self._get_signal_series_sync, gateway))
 
     def _signal_series_base(self) -> Dict[str, Any]:
         """Keys shared by every get_signal_series() response."""
@@ -1074,9 +1120,7 @@ class TimeSeriesStore:
                 "bucket_seconds": None,
                 "series": [],
             }
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._query_executor(),
+        return await self._run_query(
             partial(
                 self._get_signal_trend_sync,
                 metrics,
@@ -1087,7 +1131,7 @@ class TimeSeriesStore:
                 hours,
                 resolution,
                 dict(timezones or {}),
-            ),
+            )
         )
 
     def _get_signal_trend_sync(
@@ -1326,10 +1370,8 @@ class TimeSeriesStore:
         """
         if not self.enabled:
             return {"enabled": False, "days": [], "last_updated": None}
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._query_executor(),
-            partial(self._get_daily_energy_sync, days, gateway, start_day, end_day),
+        return await self._run_query(
+            partial(self._get_daily_energy_sync, days, gateway, start_day, end_day)
         )
 
     def _get_daily_energy_sync(
@@ -1392,7 +1434,7 @@ class TimeSeriesStore:
         self, gateway_id: str, timezone: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """Today's running totals for one gateway (gateway-local day)."""
-        if not self.enabled:
+        if not self.enabled or self._closed:
             return None
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -1440,10 +1482,8 @@ class TimeSeriesStore:
         """
         if not self.enabled:
             return {"enabled": False, "points": [], "count": 0}
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._query_executor(),
-            partial(self._get_trend_sync, hours, gateway, start, end, fit),
+        return await self._run_query(
+            partial(self._get_trend_sync, hours, gateway, start, end, fit)
         )
 
     def _get_trend_sync(
@@ -1562,10 +1602,8 @@ class TimeSeriesStore:
         """
         if not self.enabled:
             return {"enabled": False, "samples": [], "count": 0}
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._query_executor(),
-            partial(self._get_samples_sync, gateway, start, end, limit),
+        return await self._run_query(
+            partial(self._get_samples_sync, gateway, start, end, limit)
         )
 
     def _get_samples_sync(
@@ -1620,20 +1658,21 @@ class TimeSeriesStore:
                 "write_failures": 0,
                 "gateways": [],
             }
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._query_executor(), self._status_sync)
+        return await self._run_query(self._status_sync)
 
     def _status_sync(self) -> Dict[str, Any]:
         db_size = 0
         samples = daily_rows = 0
         device_series = device_samples = device_daily = 0
         gateways: List[str] = []
-        with self._reader() as open_conn:
-            if Path(self._db_path).exists():
-                db_size = os.path.getsize(self._db_path)
-                wal = Path(self._db_path + "-wal")
-                if wal.exists():
-                    db_size += wal.stat().st_size
+        # Check the file before opening a lane: opening creates the database
+        # (and its directory), which a status call must never do.
+        if Path(self._db_path).exists():
+            db_size = os.path.getsize(self._db_path)
+            wal = Path(self._db_path + "-wal")
+            if wal.exists():
+                db_size += wal.stat().st_size
+            with self._reader() as open_conn:
                 try:
                     conn = open_conn()
                     samples = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
@@ -1682,8 +1721,8 @@ class TimeSeriesStore:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the background maintenance loop (no-op when disabled)."""
-        if not self.enabled:
+        """Start the background maintenance loop (no-op when disabled or stopped)."""
+        if not self.enabled or self._closed:
             return
         if self._maintenance_task is None or self._maintenance_task.done():
             self._maintenance_task = asyncio.create_task(
@@ -1709,7 +1748,7 @@ class TimeSeriesStore:
 
     async def maintenance(self) -> None:
         """Prune raw samples and stale daily aggregates, checkpoint WAL."""
-        if not self.enabled:
+        if not self.enabled or self._closed:
             return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self._ensure_executor(), self._maintenance_sync)
@@ -1765,7 +1804,11 @@ class TimeSeriesStore:
     # ------------------------------------------------------------------
 
     async def stop(self) -> None:
-        """Stop maintenance and close the database. Safe to call repeatedly."""
+        """Stop maintenance and close the database. Safe to call repeatedly.
+
+        The store stays closed: recording becomes a no-op and queries
+        return empty results (the app builds a new store to restart).
+        """
         if self._maintenance_task and not self._maintenance_task.done():
             self._maintenance_task.cancel()
             try:
@@ -1780,6 +1823,19 @@ class TimeSeriesStore:
             self._close_sync()
 
     def _close_sync(self) -> None:
+        self._closed = True  # later queries and records never reopen
+        # Read lane first: the writer's final checkpoint removes the -wal and
+        # -shm files only when it is the last connection open.
+        with self._read_lock:
+            if self._read_conn is not None:
+                try:
+                    self._read_conn.close()
+                except sqlite3.Error as e:
+                    logger.debug("TimeSeriesStore read close failed: %s", e)
+                self._read_conn = None
+        if self._read_executor is not None:
+            self._read_executor.shutdown(wait=False, cancel_futures=True)
+            self._read_executor = None
         with self._lock:
             if self._conn is not None:
                 try:
@@ -1795,16 +1851,6 @@ class TimeSeriesStore:
             # cancel_futures: queued writes must not reopen the closed DB
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
-        with self._read_lock:
-            if self._read_conn is not None:
-                try:
-                    self._read_conn.close()
-                except sqlite3.Error as e:
-                    logger.debug("TimeSeriesStore read close failed: %s", e)
-                self._read_conn = None
-        if self._read_executor is not None:
-            self._read_executor.shutdown(wait=False, cancel_futures=True)
-            self._read_executor = None
 
 
 # module-level singleton, built lazily from settings (never at import time,
