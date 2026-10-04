@@ -116,6 +116,34 @@ class TestExtract:
         assert ts.SIGNAL_GROUPS is signals.SIGNAL_GROUPS
         assert extract_device_metrics({POD: {"HVP_PackTempMax": 10**400}}) == {}
 
+    def test_pw3_pvac_block_never_adds_fans(self):
+        # A PW3 unit's PVAC block (empty on current firmware) must not add
+        # PW2-style fan series next to the real fans - in either source,
+        # whatever the order (get_fan_speeds() lists PVAC first)
+        pvac = "PVAC--1707000-11-J--TG1"
+        pvac_fans = {
+            "PVAC_Fan_Speed_Actual_RPM": 700,
+            "PVAC_Fan_Speed_Target_RPM": 900,
+        }
+        for vitals, fans in (
+            ({pvac: pvac_fans, **PW3_VITALS}, None),
+            (PW3_VITALS, {pvac: pvac_fans, **PW3_FANS}),
+            (None, {pvac: pvac_fans, **PW3_FANS}),
+        ):
+            metrics = extract_device_metrics(vitals, fans)
+            assert not [k for k in metrics if k[0] == pvac], metrics
+            assert any(k[0] == INV for k in metrics)  # the PW3 unit itself
+
+    def test_pw2_pvac_block_still_recorded(self):
+        # No TEPINV for that serial: a Powerwall 2/+ fan is recorded
+        m = extract_device_metrics(
+            {
+                "PVAC--1707000-11-J--TG2": {"PVAC_Fan_Speed_Actual_RPM": 700},
+                INV: {"PCH_FanSpeed_A": 1200},
+            }
+        )
+        assert m[("PVAC--1707000-11-J--TG2", "fan_rpm")] == 700.0
+
     def test_skips_missing_and_bad_values(self):
         m = extract_device_metrics(
             {
@@ -1570,3 +1598,19 @@ class TestStatus:
         resp = client.get("/api/timeseries/status")
         assert resp.status_code == 200
         assert resp.json()["samples"] == 0
+
+
+@pytest.mark.asyncio
+async def test_status_counts_rows_of_an_in_memory_store():
+    # ":memory:" has no file to check: rows are counted once it is open
+    store = TimeSeriesStore(db_path=":memory:")
+    try:
+        assert (await store.status())["signal_samples"] == 0
+        await store.record_signal_sample(
+            "gw1", time.time(), {(POD, "pack_temp_max"): 30.0}
+        )
+        status = await store.status()
+        assert status["signal_samples"] == 1
+        assert status["signal_series"] == 1
+    finally:
+        await store.stop()

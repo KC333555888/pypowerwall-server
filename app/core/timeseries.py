@@ -121,6 +121,7 @@ from app.core.signals import (
     SIGNAL_METRICS,
     SIGNAL_TO_METRIC,
     signal_value,
+    tepinv_serials,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,14 +196,22 @@ def extract_device_metrics(
     Returns:
         {(device block, metric id): value}. Missing, None, boolean and
         non-finite values are skipped, so an unavailable signal simply has
-        no sample rather than a fabricated zero.
+        no sample rather than a fabricated zero. A PVAC block of a unit that
+        also has a TEPINV (Powerwall 3) block is skipped, as for MQTT: its
+        PW2-style fan readings would duplicate the unit's real fans.
     """
     out: Dict[Tuple[str, str], float] = {}
+    pw3_serials = tepinv_serials(vitals, fan_speeds)
     for payload in (vitals, fan_speeds):
         if not isinstance(payload, dict):
             continue
         for device, signals in payload.items():
             if not isinstance(signals, dict):
+                continue
+            if str(device).startswith("PVAC--") and (
+                str(device).rsplit("--", 1)[-1] in pw3_serials
+                or signals.get("serialNumber") in pw3_serials
+            ):
                 continue
             for signal, metric in SIGNAL_TO_METRIC.items():
                 value = signal_value(signals.get(signal))
@@ -1686,12 +1695,15 @@ class TimeSeriesStore:
         device_series = device_samples = device_daily = 0
         gateways: List[str] = []
         # Check the file before opening a lane: opening creates the database
-        # (and its directory), which a status call must never do.
-        if Path(self._db_path).exists():
-            db_size = os.path.getsize(self._db_path)
-            wal = Path(self._db_path + "-wal")
-            if wal.exists():
-                db_size += wal.stat().st_size
+        # (and its directory), which a status call must never do. An
+        # in-memory store has no file: count once its connection is open.
+        in_memory = self._db_path == ":memory:"
+        if self._conn is not None if in_memory else Path(self._db_path).exists():
+            if not in_memory:
+                db_size = os.path.getsize(self._db_path)
+                wal = Path(self._db_path + "-wal")
+                if wal.exists():
+                    db_size += wal.stat().st_size
             with self._reader() as open_conn:
                 try:
                     conn = open_conn()
@@ -1784,6 +1796,9 @@ class TimeSeriesStore:
                     cutoff = now - max(self._retention, RAW_KEEP_FLOOR)
                     conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
                 if self._daily_retention > 0:
+                    # One UTC cutoff day for every gateway: rows are keyed by
+                    # gateway-local day, so a row can go up to a day early or
+                    # late - negligible for a retention measured in days.
                     cutoff_day = (
                         datetime.fromtimestamp(now, _UTC)
                         - timedelta(seconds=self._daily_retention)
