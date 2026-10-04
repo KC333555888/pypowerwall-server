@@ -87,3 +87,34 @@ class TestSharedChartCode:
         assert "const DEFAULT_RANGE = '1d';" in page
         assert "storageSet(RANGE_KEY, b.dataset.range)" in page
         assert "else if (PRESETS.has(range)) applyPreset(range);" in page
+
+    def test_console_and_history_share_the_header_menu(self, client):
+        # Switching pages keeps the same menu: same page links in the same
+        # order, the current page marked, and the version badge on both.
+        # Console-only actions (Cards, Kiosk) are buttons, not page links.
+        def nav(page):
+            html = client.get(page).text
+            block = re.search(
+                r'<nav class="header-links" aria-label="Pages">(.*?)</nav>', html, re.S
+            ).group(1)
+            links = re.findall(r"<a ([^>]*)>([^<]*)</a>", block)
+            pages = [(a, t) for a, t in links if 'role="button"' not in a]
+            current = [t for a, t in pages if 'aria-current="page"' in a]
+            hrefs = [(re.search(r'href="([^"]*)"', a).group(1), t) for a, t in pages]
+            return html, hrefs, current
+
+        console, console_links, console_current = nav("/console")
+        history, history_links, history_current = nav("/history")
+        assert console_links == history_links
+        assert [t for _, t in console_links] == [
+            "Console",
+            "History",
+            "Power Flow",
+            "API Docs",
+            "Gateways API",
+            "GitHub",
+        ]
+        assert console_current == ["Console"]
+        assert history_current == ["History"]
+        assert 'class="version-badge"' in console
+        assert 'class="version-badge"' in history
