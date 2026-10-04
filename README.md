@@ -377,6 +377,16 @@ so a view can be bookmarked, e.g. `/history?range=90d` or
 one script, `app/static/js/charts.js`, and stylesheet,
 `app/static/css/charts.css`.
 
+The History page has the same header as the Console, with the same **Cards**
+and **Kiosk** controls (see [Card Visibility and Kiosk Mode](#card-visibility-and-kiosk-mode)).
+**Cards** shows or hides the Daily energy card and each chart card (hidden
+cards stay hidden as the charts reload); **Kiosk** hides the header but keeps
+the range controls. Both are saved in the browser (`pw_history_hidden_cards`,
+`pw_history_kiosk`), and `/history?kiosk=1` starts in kiosk mode without
+saving it. There is no URL parameter for cards here, since `hide=` already
+lists the switched-off series. The header, Cards menu and kiosk mode are
+shared by both pages in `app/static/js/page.js` and `app/static/css/page.css`.
+
 ### Configuration File (gateways.yaml)
 
 Pass a YAML (or JSON) config file with `--config gateways.yaml` or
@@ -554,7 +564,7 @@ opens the History page at `/history` (see **History page** under Environment Var
 
 ### Card Visibility and Kiosk Mode
 
-Use **Cards** in the console header to show or hide individual cards; the remaining cards in a row widen to fill the space. **Kiosk** hides the header and status banner for a wall display or tablet. The status banner reappears if the server loses its gateway connection, so stale data is never shown without a warning. In kiosk mode, faint **Cards** and **Exit kiosk** buttons sit in the top-right corner (hover, tap or tab to them), and Esc exits. These choices are saved in the browser.
+Use **Cards** in the console header to show or hide individual cards; the remaining cards in a row widen to fill the space. **Kiosk** hides the header and status banner for a wall display or tablet. The status banner reappears if the server loses its gateway connection, so stale data is never shown without a warning. In kiosk mode, faint **Cards** and **Exit kiosk** buttons sit in the top-right corner (hover, tap or tab to them), and Esc exits. These choices are saved in the browser. The History page has the same header, **Cards** menu and **Kiosk** mode, with its own saved choices (see **History page** under Environment Variables).
 
 A kiosk browser can be configured by URL instead. URL parameters override the saved choices and are not saved:
 

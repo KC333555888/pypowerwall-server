@@ -7,6 +7,8 @@
     <title>PyPowerwall Server</title>
     <script src="{PROXY_BASE}/static/js/charts.js?v={SERVER_VERSION}"></script>
     <link rel="stylesheet" href="{PROXY_BASE}/static/css/charts.css?v={SERVER_VERSION}">
+    <script src="{PROXY_BASE}/static/js/page.js?v={SERVER_VERSION}"></script>
+    <link rel="stylesheet" href="{PROXY_BASE}/static/css/page.css?v={SERVER_VERSION}">
     <style>
         * {
             margin: 0;
@@ -48,65 +50,8 @@
             padding: 20px;
         }
         
-        /* Header */
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 0;
-            margin-bottom: 24px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        
-        .logo-icon {
-            font-size: 2em;
-        }
-        
-        .logo h1 {
-            font-size: 1.5em;
-            font-weight: 600;
-            background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        
-        .version-badge {
-            font-size: 0.75em;
-            padding: 4px 10px;
-            border-radius: 12px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
-        
-        .header-links {
-            display: flex;
-            gap: 16px;
-        }
-        
-        .header-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            transition: all 0.2s ease;
-            font-size: 0.9em;
-        }
-        
-        .header-links a:hover,
-        .header-links a[aria-current="page"] {
-            color: var(--text-primary);
-            background: var(--bg-card);
-        }
-        
+        /* Header, Cards menu and kiosk mode: /static/css/page.css */
+
         /* Status Banner */
         .status-banner {
             background: var(--bg-card);
@@ -1548,16 +1493,6 @@
                 padding: 12px;
             }
             
-            header {
-                flex-direction: column;
-                gap: 16px;
-            }
-            
-            .header-links {
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-            
             .energy-grid {
                 grid-template-columns: 1fr;
             }
@@ -1652,130 +1587,20 @@
             margin-top: 0;
             padding-top: 0;
         }
-        /* ---- Card visibility + kiosk mode ----------------------------------
-           Hidden cards use a class with !important so they stay hidden even
-           when feature checks later reset card.style.display = ''. */
-        .card.user-hidden {
-            display: none !important;
-        }
-        /* The two extra header links would push the header wider than the
-           page on narrow screens; let it wrap instead */
-        header {
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-        .header-links {
-            flex-wrap: wrap;
-        }
+        /* ---- Card visibility + kiosk mode (shared parts: page.css) ---- */
         /* When cards are hidden, the remaining cards in a row share its width
-           (--card-span is set by applyCardLayout()). Desktop only: at 900px
-           and below every card already spans the full width. */
+           (--card-span is set by balanceRows() at the end of the page).
+           Desktop only: at 900px and below every card already spans the
+           full width. */
         @media (min-width: 901px) {
             .dashboard-grid.cards-customized .card[data-card-span] {
                 grid-column: span var(--card-span);
             }
         }
-        .card-menu {
-            position: fixed;
-            top: 72px;
-            right: 20px;
-            z-index: 1000;
-            min-width: 240px;
-            max-height: calc(100vh - 100px);
-            overflow-y: auto;
-            padding: 14px 16px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-            color: var(--text-primary);
-            font-size: 0.9em;
-        }
-        .card-menu[hidden] {
-            display: none;
-        }
-        .card-menu h4 {
-            margin: 0 0 8px;
-            font-size: 0.8em;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-secondary);
-        }
-        .card-menu label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 5px 0;
-            cursor: pointer;
-        }
-        .card-menu .card-menu-note {
-            color: var(--text-secondary);
-            font-size: 0.8em;
-            margin-left: auto;
-        }
-        .card-menu hr {
-            border: none;
-            border-top: 1px solid var(--border-color);
-            margin: 10px 0;
-        }
-        .card-menu button {
-            width: 100%;
-            padding: 6px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
-            background: transparent;
-            color: var(--text-secondary);
-            cursor: pointer;
-        }
-        .card-menu button:hover {
-            color: var(--text-primary);
-        }
-        /* Kiosk: no header or status banner, tighter margins, no hover glow */
-        /* The status banner stays visible while disconnected, so a wall
-           display never shows frozen data without a warning */
-        body.kiosk header,
+        /* The status banner stays visible in kiosk while disconnected, so a
+           wall display never shows frozen data without a warning */
         body.kiosk #status-banner.connected {
             display: none;
-        }
-        body.kiosk .container {
-            max-width: none;
-            padding: 12px;
-        }
-        body.kiosk .card:hover {
-            border-color: var(--border-color);
-            box-shadow: none;
-        }
-        body.kiosk .card-menu {
-            top: 52px;
-        }
-        /* Floating controls, only in kiosk. Faint until hovered or tapped. */
-        .kiosk-controls {
-            display: none;
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            z-index: 999;
-            gap: 6px;
-            opacity: 0.15;
-            transition: opacity 0.3s ease;
-        }
-        body.kiosk .kiosk-controls {
-            display: flex;
-        }
-        .kiosk-controls:hover,
-        .kiosk-controls:focus-within,
-        .kiosk-controls.active {
-            opacity: 1;
-        }
-        .kiosk-controls button {
-            padding: 6px 12px;
-            border-radius: 6px;
-            border: 1px solid var(--border-color);
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            font-size: 0.85em;
-            cursor: pointer;
         }
     </style>
 </head>
@@ -1785,9 +1610,11 @@
             <div class="logo">
                 <span class="logo-icon">⚡</span>
                 <h1>PyPowerwall Server</h1>
-                <span id="version-badge" class="version-badge">v--</span>
+                <span id="version-badge" class="version-badge">v{SERVER_VERSION}</span>
             </div>
-            <!-- Same page links, in the same order, as history.html -->
+            <!-- The header, Cards menu and kiosk controls are the same on
+                 history.html: keep them identical (styles and behavior are
+                 shared in /static/css/page.css and /static/js/page.js) -->
             <nav class="header-links" aria-label="Pages">
                 <a href="{PROXY_BASE}/console" aria-current="page">Console</a>
                 <a href="{PROXY_BASE}/history">History</a>
@@ -4732,7 +4559,7 @@
         console.log('PyPowerwall Server console loaded');
     </script>
     <script>
-        // ---- Card visibility + kiosk mode ---------------------------------
+        // ---- Card visibility + kiosk mode (shared: /static/js/page.js) ----
         // Choices persist in this browser's localStorage. For a kiosk browser
         // you can set them in the URL instead (not saved):
         //   /console?kiosk=1&hide=alerts,gateways,mqtt
@@ -4740,30 +4567,11 @@
         // energy, alerts, strings, health, control, powerwall, gateways, mqtt,
         // daily-energy.
         (function () {
-            const HIDDEN_KEY = 'pw_console_hidden_cards';
-            const KIOSK_KEY = 'pw_console_kiosk';
             // Cards that share a row on desktop; remaining ones split its width
             const ROWS = [['power-flow', 'energy'], ['alerts', 'strings', 'health']];
 
             const grid = document.querySelector('.dashboard-grid');
             if (!grid) return;
-            const menu = document.getElementById('card-menu');
-            const list = document.getElementById('card-menu-list');
-            const kioskBox = document.getElementById('kiosk-checkbox');
-            const controls = document.getElementById('kiosk-controls');
-
-            const params = new URLSearchParams(location.search);
-            const urlHide = params.has('hide')
-                ? params.get('hide').split(',').map(s => s.trim()).filter(Boolean)
-                : null;
-            const urlKiosk = params.has('kiosk') ? params.get('kiosk') !== '0' : null;
-
-            function storageGet(key) {
-                try { return localStorage.getItem(key); } catch (e) { return null; }
-            }
-            function storageSet(key, value) {
-                try { localStorage.setItem(key, value); } catch (e) { /* ignore */ }
-            }
 
             function cardId(card) {
                 for (const c of card.classList) {
@@ -4778,31 +4586,13 @@
                 if (id) { card.dataset.cardId = id; byId[id] = card; }
             });
 
-            let hidden;
-            if (urlHide) {
-                hidden = new Set(urlHide);
-            } else {
-                let saved = [];
-                try { saved = JSON.parse(storageGet(HIDDEN_KEY) || '[]'); } catch (e) { /* ignore */ }
-                hidden = new Set(Array.isArray(saved)
-                    ? saved.filter(id => typeof id === 'string') : []);
-            }
-            let kiosk = urlKiosk !== null ? urlKiosk : storageGet(KIOSK_KEY) === '1';
-
-            function saveHidden() {
-                if (!urlHide) storageSet(HIDDEN_KEY, JSON.stringify([...hidden]));
-            }
-
             // Cards shown or hidden by feature checks (strings, MQTT, control...)
             function isShown(card) {
                 return !!card && !card.classList.contains('user-hidden')
                     && getComputedStyle(card).display !== 'none';
             }
 
-            function applyCardLayout() {
-                cards.forEach(card => {
-                    card.classList.toggle('user-hidden', hidden.has(card.dataset.cardId));
-                });
+            function balanceRows(hidden) {
                 grid.classList.toggle('cards-customized', hidden.size > 0);
                 ROWS.forEach(row => {
                     const members = row.map(id => byId[id]).filter(Boolean);
@@ -4822,139 +4612,23 @@
                 });
             }
 
-            function cardLabel(card) {
-                const title = card.querySelector('.card-title');
-                const text = title ? title.textContent.replace(/\s+/g, ' ').trim() : '';
-                return text || card.dataset.cardId;
-            }
-
-            function buildMenu() {
-                list.innerHTML = '';
-                cards.forEach(card => {
-                    const id = card.dataset.cardId;
-                    if (!id) return;
-                    const label = document.createElement('label');
-                    const box = document.createElement('input');
-                    box.type = 'checkbox';
-                    box.checked = !hidden.has(id);
-                    box.addEventListener('change', () => {
-                        if (box.checked) hidden.delete(id); else hidden.add(id);
-                        saveHidden();
-                        applyCardLayout();
-                    });
-                    label.appendChild(box);
-                    label.appendChild(document.createTextNode(cardLabel(card)));
-                    // Feature-gated cards that aren't active on this server
-                    if (!hidden.has(id) && !isShown(card)) {
-                        const note = document.createElement('span');
-                        note.className = 'card-menu-note';
-                        note.textContent = 'not active';
-                        label.appendChild(note);
-                    }
-                    list.appendChild(label);
-                });
-                kioskBox.checked = kiosk;
-            }
-
-            function setKiosk(on) {
-                kiosk = on;
-                document.body.classList.toggle('kiosk', on);
-                kioskBox.checked = on;
-                if (urlKiosk === null) storageSet(KIOSK_KEY, on ? '1' : '0');
-                // Cards may change size; let charts/iframes re-measure
-                window.dispatchEvent(new Event('resize'));
-            }
-
-            const openers = [
-                document.getElementById('card-menu-toggle'),
-                document.getElementById('kiosk-cards-btn'),
-            ];
-            let lastOpener = null;
-
-            // restoreFocus: return focus to the opener on close. Skipped for
-            // outside clicks, where focus should go wherever the user clicked.
-            function toggleMenu(show, opener, restoreFocus = true) {
-                const open = show !== undefined ? show : menu.hidden;
-                if (open === !menu.hidden) return;
-                if (open) {
-                    lastOpener = opener || null;
-                    buildMenu();
-                }
-                menu.hidden = !open;
-                openers.forEach(el => el.setAttribute('aria-expanded', String(open)));
-                if (open) {
-                    const first = menu.querySelector('input');
-                    if (first) first.focus();
-                } else if (restoreFocus && lastOpener
-                           && lastOpener.offsetParent !== null) {
-                    lastOpener.focus();
-                }
-            }
-
-            // role="button" links: Space activates them like a real button
-            function activateOnSpace(el) {
-                el.addEventListener('keydown', e => {
-                    if (e.key === ' ') { e.preventDefault(); el.click(); }
-                });
-            }
-            const menuToggle = document.getElementById('card-menu-toggle');
-            const kioskToggle = document.getElementById('kiosk-toggle');
-            const kioskCardsBtn = document.getElementById('kiosk-cards-btn');
-            activateOnSpace(menuToggle);
-            activateOnSpace(kioskToggle);
-
-            menuToggle.addEventListener('click', e => {
-                e.preventDefault(); toggleMenu(undefined, menuToggle);
+            const cardsUi = window.PWPage.cardsAndKiosk({
+                hiddenKey: 'pw_console_hidden_cards',
+                kioskKey: 'pw_console_kiosk',
+                urlHideParam: 'hide',
+                onLayout: balanceRows,
             });
-            kioskToggle.addEventListener('click', e => {
-                e.preventDefault(); toggleMenu(false, null, false); setKiosk(true);
-            });
-            kioskCardsBtn.addEventListener('click', () => toggleMenu(undefined, kioskCardsBtn));
-            document.getElementById('kiosk-exit-btn').addEventListener('click', () => {
-                toggleMenu(false, null, false); setKiosk(false);
-            });
-            kioskBox.addEventListener('change', () => setKiosk(kioskBox.checked));
-            document.getElementById('card-menu-reset').addEventListener('click', () => {
-                hidden.clear(); saveHidden(); applyCardLayout(); buildMenu();
-            });
-
-            // Close the menu on outside click; Esc closes it, then leaves kiosk
-            document.addEventListener('click', e => {
-                if (!menu.hidden && !menu.contains(e.target)
-                    && !e.target.closest('#card-menu-toggle, #kiosk-cards-btn')) {
-                    toggleMenu(false, null, false);
-                }
-            });
-            document.addEventListener('keydown', e => {
-                // Leave Esc to open dialogs (e.g. the islanding confirmation)
-                if (e.defaultPrevented || document.querySelector('dialog[open]')) return;
-                if (e.key !== 'Escape') return;
-                if (!menu.hidden) toggleMenu(false);
-                else if (kiosk) setKiosk(false);
-            });
-
-            // Touch screens have no hover: a tap reveals the kiosk buttons briefly
-            let fadeTimer;
-            document.addEventListener('touchstart', () => {
-                if (!kiosk) return;
-                controls.classList.add('active');
-                clearTimeout(fadeTimer);
-                fadeTimer = setTimeout(() => controls.classList.remove('active'), 4000);
-            }, { passive: true });
 
             // Re-balance rows when feature checks show or hide cards
             let pending = false;
             const observer = new MutationObserver(() => {
                 if (pending) return;
                 pending = true;
-                requestAnimationFrame(() => { pending = false; applyCardLayout(); });
+                requestAnimationFrame(() => { pending = false; cardsUi.apply(); });
             });
             [grid, ...cards].forEach(el => observer.observe(el, {
                 attributes: true, attributeFilter: ['class', 'style']
             }));
-
-            applyCardLayout();
-            setKiosk(kiosk);
         })();
     </script>
 </body>

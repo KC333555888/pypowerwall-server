@@ -89,32 +89,96 @@ class TestSharedChartCode:
         assert "else if (PRESETS.has(range)) applyPreset(range);" in page
 
     def test_console_and_history_share_the_header_menu(self, client):
-        # Switching pages keeps the same menu: same page links in the same
-        # order, the current page marked, and the version badge on both.
-        # Console-only actions (Cards, Kiosk) are buttons, not page links.
+        # Switching pages keeps the same menu: same links and buttons in the
+        # same order, the current page marked, and the version badge on both.
+        # Cards and Kiosk are buttons (role="button"), last, on both pages.
         def nav(page):
             html = client.get(page).text
             block = re.search(
                 r'<nav class="header-links" aria-label="Pages">(.*?)</nav>', html, re.S
             ).group(1)
             links = re.findall(r"<a ([^>]*)>([^<]*)</a>", block)
-            pages = [(a, t) for a, t in links if 'role="button"' not in a]
-            current = [t for a, t in pages if 'aria-current="page"' in a]
-            hrefs = [(re.search(r'href="([^"]*)"', a).group(1), t) for a, t in pages]
-            return html, hrefs, current
+            # Everything but the current-page mark must match exactly
+            items = [(a.replace(' aria-current="page"', ""), t) for a, t in links]
+            current = [t for a, t in links if 'aria-current="page"' in a]
+            buttons = [t for a, t in links if 'role="button"' in a]
+            return html, items, current, buttons
 
-        console, console_links, console_current = nav("/console")
-        history, history_links, history_current = nav("/history")
-        assert console_links == history_links
-        assert [t for _, t in console_links] == [
+        console, console_items, console_current, console_buttons = nav("/console")
+        history, history_items, history_current, history_buttons = nav("/history")
+        assert console_items == history_items
+        assert [t for _, t in console_items] == [
             "Console",
             "History",
             "Power Flow",
             "API Docs",
             "Gateways API",
             "GitHub",
+            "Cards",
+            "Kiosk",
         ]
+        assert console_buttons == history_buttons == ["Cards", "Kiosk"]
         assert console_current == ["Console"]
         assert history_current == ["History"]
-        assert 'class="version-badge"' in console
-        assert 'class="version-badge"' in history
+        badge = '<span id="version-badge" class="version-badge">v'
+        assert badge in console and badge in history
+
+    def test_cards_menu_and_kiosk_markup_match(self, client):
+        # The Cards menu and the floating kiosk buttons are the same block
+        # on both pages (page.js finds them by id)
+        def chrome(page):
+            html = client.get(page).text
+            return re.search(
+                r'(<div class="kiosk-controls" id="kiosk-controls">.*?'
+                r'<button type="button" id="card-menu-reset">Show all cards</button>'
+                r"\s*</div>)",
+                html,
+                re.S,
+            ).group(1)
+
+        assert chrome("/console") == chrome("/history")
+
+    def test_pages_load_shared_page_chrome(self, client):
+        # DESIGN.md §6.6: header, Cards menu and kiosk live in one script and
+        # one stylesheet, cache-busted by version like charts.js
+        from app.config import SERVER_VERSION
+
+        for page in ("/console", "/history"):
+            html = client.get(page).text
+            assert f'src="/static/js/page.js?v={SERVER_VERSION}"' in html, page
+            assert f'href="/static/css/page.css?v={SERVER_VERSION}"' in html, page
+            assert "window.PWPage.cardsAndKiosk(" in html, page
+            # Not copied into the page
+            for inline in (
+                ".card-menu {",
+                ".kiosk-controls {",
+                ".header-links a {",
+                ".version-badge {",
+                "function toggleMenu",
+                "function setKiosk",
+            ):
+                assert inline not in html, (page, inline)
+        js = client.get("/static/js/page.js").text
+        assert "window.PWPage" in js
+        assert "function toggleMenu" in js and "function setKiosk" in js
+        css = client.get("/static/css/page.css").text
+        for rule in (".card-menu {", ".kiosk-controls {", ".header-links a {"):
+            assert rule in css, rule
+
+    def test_card_and_kiosk_settings_names(self, client):
+        # Released Console names (0.7.0) stay; History gets its own keys and
+        # no card URL parameter (its hide= lists switched-off series)
+        console = client.get("/console").text
+        assert "hiddenKey: 'pw_console_hidden_cards'" in console
+        assert "kioskKey: 'pw_console_kiosk'" in console
+        assert "urlHideParam: 'hide'" in console
+        history = client.get("/history").text
+        assert "hiddenKey: 'pw_history_hidden_cards'" in history
+        assert "kioskKey: 'pw_history_kiosk'" in history
+        assert "urlHideParam" not in history
+        # Signal cards are rebuilt on every load; hidden ones stay hidden
+        assert "renderSignalCardsNow(); cardsUi.apply();" in history
+        assert 'data-card-id="energy"' in history
+        js = client.get("/static/js/page.js").text
+        assert "params.has('kiosk')" in js
+        assert ".card[data-card-id]" in js

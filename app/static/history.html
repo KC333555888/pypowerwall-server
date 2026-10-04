@@ -6,6 +6,8 @@
     {PROXY_BASE_SCRIPT}
     <script src="{PROXY_BASE}/static/js/charts.js?v={SERVER_VERSION}"></script>
     <link rel="stylesheet" href="{PROXY_BASE}/static/css/charts.css?v={SERVER_VERSION}">
+    <script src="{PROXY_BASE}/static/js/page.js?v={SERVER_VERSION}"></script>
+    <link rel="stylesheet" href="{PROXY_BASE}/static/css/page.css?v={SERVER_VERSION}">
     <title>History - PyPowerwall Server</title>
     <link rel="icon" type="image/png" sizes="32x32" href="{PROXY_BASE}/favicon-32x32.png">
     <style>
@@ -54,65 +56,7 @@
             padding: 20px;
         }
 
-        header {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 0;
-            margin-bottom: 20px;
-            border-bottom: 1px solid var(--border-color);
-        }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .logo-icon {
-            font-size: 2em;
-        }
-
-        .logo h1 {
-            font-size: 1.5em;
-            font-weight: 600;
-            background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .version-badge {
-            font-size: 0.75em;
-            padding: 4px 10px;
-            border-radius: 12px;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
-
-        .header-links {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
-
-        .header-links a {
-            color: var(--text-secondary);
-            text-decoration: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 0.9em;
-        }
-
-        .header-links a:hover,
-        .header-links a[aria-current="page"] {
-            color: var(--text-primary);
-            background: var(--bg-card);
-        }
+        /* Header, Cards menu and kiosk mode: /static/css/page.css */
 
         a:focus-visible,
         button:focus-visible,
@@ -129,6 +73,15 @@
             align-items: center;
             gap: 12px 20px;
             margin-bottom: 20px;
+        }
+
+        /* Kiosk keeps the range controls; leave room on their row for the
+           floating Cards / Exit kiosk buttons (narrow screens put the
+           presets on a row of their own, below them) */
+        @media (min-width: 701px) {
+            body.kiosk .controls {
+                padding-right: 168px;
+            }
         }
 
         .control-group {
@@ -471,9 +424,12 @@
             <div class="logo">
                 <span class="logo-icon">⚡</span>
                 <h1>PyPowerwall Server</h1>
-                <span class="version-badge">v{SERVER_VERSION}</span>
+                <span id="version-badge" class="version-badge">v{SERVER_VERSION}</span>
             </div>
-            <!-- Same page links, in the same order, as index.html (the Console) -->
+            <!-- The header, Cards menu and kiosk controls are the same on
+                 index.html (the Console): keep them identical (styles and
+                 behavior are shared in /static/css/page.css and
+                 /static/js/page.js) -->
             <nav class="header-links" aria-label="Pages">
                 <a href="{PROXY_BASE}/console">Console</a>
                 <a href="{PROXY_BASE}/history" aria-current="page">History</a>
@@ -481,8 +437,24 @@
                 <a href="{PROXY_BASE}/docs">API Docs</a>
                 <a href="{PROXY_BASE}/api/gateways">Gateways API</a>
                 <a href="https://github.com/jasonacox/pypowerwall-server" target="_blank" rel="noopener">GitHub</a>
+                <a href="#" id="card-menu-toggle" role="button" aria-controls="card-menu" aria-expanded="false" title="Show or hide cards">Cards</a>
+                <a href="#" id="kiosk-toggle" role="button" title="Kiosk mode (Esc to exit)">Kiosk</a>
             </nav>
         </header>
+
+        <div class="kiosk-controls" id="kiosk-controls">
+            <button type="button" id="kiosk-cards-btn" aria-controls="card-menu" aria-expanded="false">Cards</button>
+            <button type="button" id="kiosk-exit-btn">Exit kiosk</button>
+        </div>
+
+        <div class="card-menu" id="card-menu" role="group" aria-label="Card visibility" hidden>
+            <h4>Show cards</h4>
+            <div id="card-menu-list"></div>
+            <hr>
+            <label><input type="checkbox" id="kiosk-checkbox"> Kiosk mode</label>
+            <hr>
+            <button type="button" id="card-menu-reset">Show all cards</button>
+        </div>
 
         <div class="controls">
             <div class="control-group">
@@ -512,7 +484,7 @@
             </div>
         </div>
 
-        <section class="card" aria-labelledby="energy-title">
+        <section class="card" data-card-id="energy" aria-labelledby="energy-title">
             <div class="card-header">
                 <h2 class="card-title" id="energy-title">Daily energy</h2>
                 <div class="card-note" id="energy-note"></div>
@@ -522,9 +494,10 @@
             </div>
         </section>
 
-        <!-- One chart card per signal group, built from /api/timeseries/signals -->
+        <!-- One chart card per signal group, built from /api/timeseries/signals
+             (card id = group key; "signals" while there is nothing to chart) -->
         <div id="signal-cards">
-            <section class="card" aria-labelledby="signals-title">
+            <section class="card" data-card-id="signals" aria-labelledby="signals-title">
                 <div class="card-header">
                     <h2 class="card-title" id="signals-title">Powerwall temperatures and fans</h2>
                 </div>
@@ -582,6 +555,14 @@
         // Helpers
         // ---------------------------------------------------------------
         const $ = id => document.getElementById(id);
+
+        // Cards menu + kiosk mode (shared with the Console, /static/js/page.js).
+        // Cards: "energy" and one per signal group (its catalog key). No URL
+        // parameter for cards here: hide= already lists switched-off series.
+        const cardsUi = window.PWPage.cardsAndKiosk({
+            hiddenKey: 'pw_history_hidden_cards',
+            kioskKey: 'pw_history_kiosk',
+        });
 
         function storageGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
         function storageSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
@@ -744,9 +725,11 @@
             }
         }
 
-        function makeCard(container, id, title) {
+        // cardId: the id the Cards menu remembers it by (data-card-id)
+        function makeCard(container, id, title, cardId) {
             const section = document.createElement('section');
             section.className = 'card';
+            if (cardId) section.dataset.cardId = cardId;
             section.setAttribute('aria-labelledby', `${id}-title`);
             const header = document.createElement('div');
             header.className = 'card-header';
@@ -1080,7 +1063,8 @@
 
         // One card per signal group with data, in catalog order
         function renderSignalCards() {
-            keepPlace($('signal-cards'), renderSignalCardsNow);
+            // Rebuilt cards keep the Cards menu choices
+            keepPlace($('signal-cards'), () => { renderSignalCardsNow(); cardsUi.apply(); });
         }
         function renderSignalCardsNow() {
             const wrap = $('signal-cards');
@@ -1092,7 +1076,7 @@
             const groups = Array.from(new Set(series.map(s => groupOf(s.metric))))
                 .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
             if (!groups.length) {
-                const { body } = makeCard(wrap, 'signals', 'Powerwall temperatures and fans');
+                const { body } = makeCard(wrap, 'signals', 'Powerwall temperatures and fans', 'signals');
                 body.innerHTML = `<div class="empty">${trend && trend.error ? `Couldn't load temperature and fan history: ${esc(trend.error)}` : signalsEmpty()}</div>`;
                 return;
             }
@@ -1105,7 +1089,7 @@
                 writeUrl();
             }
             for (const group of groups) {
-                const { body, note, header } = makeCard(wrap, `signal-${group}`, groupInfo(group).label);
+                const { body, note, header } = makeCard(wrap, `signal-${group}`, groupInfo(group).label, group);
                 renderSignalCard(group, body, note, units, header);
             }
         }
