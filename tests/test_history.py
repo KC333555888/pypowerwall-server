@@ -288,9 +288,9 @@ class TestDeviceTrend:
         ],
     )
     async def test_raw_bucket_follows_interval(
-        self, tmp_path, interval, window, expected
+        self, make_store, interval, window, expected
     ):
-        store = store_for(tmp_path, signal_interval=interval)
+        store = make_store(signal_interval=interval)
         now = time.time()
         await self._seed(store, now - 600, 5)
         body = await store.get_signal_trend(
@@ -373,8 +373,8 @@ class TestDeviceTrend:
         await store.stop()
 
     @pytest.mark.asyncio
-    async def test_default_interval_is_one_minute(self, tmp_path):
-        store = store_for(tmp_path)
+    async def test_default_interval_is_one_minute(self, make_store):
+        store = make_store()
         assert store._signal_interval == 60
         now = time.time()
         metrics = {("TEPOD--1", "pack_temp_max"): 25.0}
@@ -385,8 +385,8 @@ class TestDeviceTrend:
         assert stored == [True] + [False] * 11 + [True]
 
     @pytest.mark.asyncio
-    async def test_thirty_second_interval(self, tmp_path):
-        store = store_for(tmp_path, signal_interval="30s")
+    async def test_thirty_second_interval(self, make_store):
+        store = make_store(signal_interval="30s")
         assert store._signal_interval == 30
         now = time.time()
         metrics = {("TEPOD--1", "pack_temp_max"): 25.0}
@@ -397,9 +397,9 @@ class TestDeviceTrend:
         assert stored == [True] + [False] * 5 + [True]
 
     @pytest.mark.asyncio
-    async def test_interval_below_minimum_is_raised(self, tmp_path, caplog):
+    async def test_interval_below_minimum_is_raised(self, make_store, caplog):
         with caplog.at_level("WARNING"):
-            store = store_for(tmp_path, signal_interval="5s")
+            store = make_store(signal_interval="5s")
         assert store._signal_interval == 30
         assert "below the 30s minimum" in caplog.text
         assert "invalid" not in caplog.text
@@ -453,9 +453,9 @@ class TestDeviceTimezones:
         return local.replace(tzinfo=ZoneInfo(tz)).timestamp()
 
     @pytest.mark.asyncio
-    async def test_daily_window_uses_gateway_local_days(self, tmp_path):
+    async def test_daily_window_uses_gateway_local_days(self, make_store):
         tz = "Australia/Sydney"  # UTC+10/+11: local midnight is the UTC day before
-        store = store_for(tmp_path, signal_interval="60s")
+        store = make_store(signal_interval="60s")
         days = (("2026-03-09", 10.0), ("2026-03-10", 20.0), ("2026-03-11", 30.0))
         for day, value in days:
             await store.record_signal_sample(
@@ -500,9 +500,9 @@ class TestDeviceTimezones:
         assert [p["day"] for p in series["points"]] == ["2026-03-10"]
 
     @pytest.mark.asyncio
-    async def test_auto_resolution_judges_days_in_local_time(self, tmp_path):
+    async def test_auto_resolution_judges_days_in_local_time(self, make_store):
         tz = "America/Los_Angeles"  # evening local = next UTC day
-        store = store_for(tmp_path, signal_interval="60s")
+        store = make_store(signal_interval="60s")
         # First samples ever: 20:00-21:00 local on 03-09 (03:00+ UTC on 03-10)
         first = self._ts("2026-03-09", 20, tz)
         for i in range(60):
@@ -769,8 +769,8 @@ class TestSignalTrendBounds:
         assert client.get(f"/api/timeseries/{route}?{query}").status_code == 200
 
     @pytest.mark.asyncio
-    async def test_raw_beyond_max_span_reads_daily(self, tmp_path):
-        store = store_for(tmp_path, signal_interval="60s")
+    async def test_raw_beyond_max_span_reads_daily(self, make_store):
+        store = make_store(signal_interval="60s")
         now = time.time()
         await store.record_signal_sample(
             "gw1", now - 60, {(POD, "pack_temp_max"): 30.0}
@@ -781,11 +781,11 @@ class TestSignalTrendBounds:
         assert body["resolution"] == "daily"
 
     @pytest.mark.asyncio
-    async def test_large_row_estimate_reads_daily(self, tmp_path, monkeypatch):
+    async def test_large_row_estimate_reads_daily(self, make_store, monkeypatch):
         import app.core.timeseries as ts
 
         monkeypatch.setattr(ts, "SIGNAL_RAW_MAX_ROWS", 100)
-        store = store_for(tmp_path, signal_interval="60s")
+        store = make_store(signal_interval="60s")
         now = time.time()
         await store.record_signal_sample(
             "gw1", now - 60, {(POD, "pack_temp_max"): 30.0}
