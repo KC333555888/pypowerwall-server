@@ -167,7 +167,8 @@
         ctx.lineWidth = 1;
         ctx.textAlign = 'right';
         ctx.textBaseline = 'middle';
-        const dp = step < 1 ? (step < 0.1 ? 2 : 1) : 0;
+        // Enough decimals that every tick label differs (0.005 steps -> 3)
+        const dp = Math.min(6, Math.max(0, -Math.floor(Math.log10(step) + 1e-9)));
         for (let v = lo; v <= hi + step / 2; v += step) {
             const y = Math.round(Y(v)) + 0.5;
             ctx.beginPath(); ctx.moveTo(padding.l, y); ctx.lineTo(w - padding.r, y); ctx.stroke();
