@@ -156,13 +156,22 @@ class TestSharedChartCode:
                 ".version-badge {",
                 "function toggleMenu",
                 "function setKiosk",
+                # One scrollbar style: a styled WebKit scrollbar takes width
+                # (overlay ones don't), so a page-only copy shifts the header
+                "::-webkit-scrollbar",
             ):
                 assert inline not in html, (page, inline)
         js = client.get("/static/js/page.js").text
         assert "window.PWPage" in js
         assert "function toggleMenu" in js and "function setKiosk" in js
         css = client.get("/static/css/page.css").text
-        for rule in (".card-menu {", ".kiosk-controls {", ".header-links a {"):
+        for rule in (
+            ".card-menu {",
+            ".kiosk-controls {",
+            ".header-links a {",
+            "::-webkit-scrollbar {",
+            "scrollbar-gutter: stable;",
+        ):
             assert rule in css, rule
 
     def test_card_and_kiosk_settings_names(self, client):

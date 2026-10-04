@@ -2,6 +2,34 @@
    the header menu, the Cards menu and kiosk mode. One copy, so the two
    headers can't drift apart. Colors come from each page's :root tokens. */
 
+/* ---- Scrollbar ------------------------------------------------------ */
+/* One scrollbar style on every page. A styled WebKit scrollbar always takes
+   its width (macOS overlay scrollbars take none), so pages that differ here
+   put the centered header a few pixels apart; the stable gutter also keeps
+   a page that is briefly short while loading from shifting. */
+html {
+    scrollbar-gutter: stable;
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}
+
 /* ---- Header --------------------------------------------------------- */
 header {
     display: flex;
