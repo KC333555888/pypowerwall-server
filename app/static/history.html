@@ -751,9 +751,10 @@
                 if (state.from) p.set('start', state.from);
                 p.set('end', state.to || localDay(new Date()));
             } else {
-                // No end for presets: the gateway's current day can be ahead
-                // of this browser's (see energyRange)
-                p.set('start', state.from || '1970-01-01');
+                // No end, and a day of slack before the start: the gateway's
+                // current day can be a day ahead of or behind this browser's
+                // (see energyRange)
+                p.set('start', state.from ? addDays(state.from, -1) : '1970-01-01');
             }
             if (state.gateway) p.set('gateway', state.gateway);
             // Short ranges also chart power through the day from raw samples
@@ -793,14 +794,18 @@
             keepPlace($('energy-body'), renderEnergyNow);
         }
         // The days the energy card covers, and the rows within them. Rows are
-        // keyed by each gateway's local day, which can be a day ahead of this
-        // browser's: a preset then ends on that latest day (same day count).
+        // keyed by each gateway's local day, which can differ from this
+        // browser's by a day. A preset then ends on the gateway's day (same
+        // day count): when the latest row is ahead, or - for the rolling
+        // ranges, while recording is live (the power trend has points) - one
+        // day behind, which is then the gateway's current day.
         function energyRange() {
             const all = state.energyDays;
             let first = state.from;
             let last = state.to || localDay(new Date());
             const latest = all.length ? all[all.length - 1].day : null;
-            if (state.range !== 'custom' && latest && latest > last) {
+            const live = ROLLING.has(state.range) && (state.powerTrend?.points || []).length > 0;
+            if (state.range !== 'custom' && latest && (latest > last || (live && latest === addDays(last, -1)))) {
                 if (first) first = addDays(first, Math.round((dayX(latest) - dayX(last)) / DAY));
                 last = latest;
             }
@@ -832,7 +837,8 @@
             const singleDay = dayCount === 1;
             if (singleDay) {
                 const day = rows[0].day;
-                $('energy-title').textContent = day >= localDay(new Date()) ? 'Today' : fmtDayLong(day);
+                // 1h/6h always show the gateway's current day (see energyRange)
+                $('energy-title').textContent = SUBDAY.has(state.range) || day >= localDay(new Date()) ? 'Today' : fmtDayLong(day);
             }
             $('energy-note').textContent = singleDay
                 ? (SUBDAY.has(state.range) ? 'So far today · energy is totalled per local day' : 'kWh for the day')
