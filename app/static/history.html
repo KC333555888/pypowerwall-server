@@ -128,7 +128,8 @@
             flex-wrap: wrap;
         }
 
-        .control-group > label {
+        .control-group > label,
+        .control-group > .control-label {
             font-size: 0.85em;
             color: var(--text-secondary);
         }
@@ -471,7 +472,7 @@
 
         <div class="controls">
             <div class="control-group">
-                <label id="range-label">Range</label>
+                <span class="control-label" id="range-label">Range</span>
                 <div class="segmented" id="range-presets" role="group" aria-labelledby="range-label">
                     <button type="button" data-range="1h">1h</button>
                     <button type="button" data-range="6h">6h</button>
@@ -590,7 +591,7 @@
         // Fetch JSON with the reload's abort signal (timeouts abort it too)
         async function getJSON(url, signal) {
             const resp = await fetch(url, { signal });
-            if (!resp.ok) throw new Error(`${url} returned ${resp.status}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             return resp.json();
         }
 
@@ -746,8 +747,14 @@
         // ---------------------------------------------------------------
         async function fetchEnergy(signal) {
             const p = new URLSearchParams();
-            if (state.from) p.set('start', state.from);
-            p.set('end', state.to || localDay(new Date()));
+            if (state.range === 'custom') {
+                if (state.from) p.set('start', state.from);
+                p.set('end', state.to || localDay(new Date()));
+            } else {
+                // No end for presets: the gateway's current day can be ahead
+                // of this browser's (see energyRange)
+                p.set('start', state.from || '1970-01-01');
+            }
             if (state.gateway) p.set('gateway', state.gateway);
             // Short ranges also chart power through the day from raw samples
             let power = null;
@@ -761,6 +768,8 @@
                         if (e.name === 'AbortError') throw e;
                         return { error: e.message };
                     });
+                // Awaited below, but unhandled if /daily fails first
+                power.catch(() => {});
             }
             const data = await getJSON('/api/timeseries/daily?' + p.toString(), signal);
             // Sum gateways per day (one gateway when filtered), oldest first
@@ -783,9 +792,25 @@
         function renderEnergy() {
             keepPlace($('energy-body'), renderEnergyNow);
         }
+        // The days the energy card covers, and the rows within them. Rows are
+        // keyed by each gateway's local day, which can be a day ahead of this
+        // browser's: a preset then ends on that latest day (same day count).
+        function energyRange() {
+            const all = state.energyDays;
+            let first = state.from;
+            let last = state.to || localDay(new Date());
+            const latest = all.length ? all[all.length - 1].day : null;
+            if (state.range !== 'custom' && latest && latest > last) {
+                if (first) first = addDays(first, Math.round((dayX(latest) - dayX(last)) / DAY));
+                last = latest;
+            }
+            const rows = all.filter(r => (!first || r.day >= first) && r.day <= last);
+            return { first: first || (rows.length ? rows[0].day : last), last, rows };
+        }
+
         function renderEnergyNow() {
             const body = $('energy-body');
-            const rows = state.energyDays;
+            const { first, last, rows } = energyRange();
             body.replaceChildren();
             C.prune();
             $('energy-title').textContent = SUBDAY.has(state.range) ? 'Today' : 'Daily energy';
@@ -797,18 +822,17 @@
                 return;
             }
             if (!rows.length) {
-                renderEnergyMessage('No daily energy recorded in this range. Totals start accumulating from the first poll after the server starts; pick a wider range or check back tomorrow.');
+                const trendError = rolling && state.powerTrend?.error ? `<br>${esc(C.trendNote(state.powerTrend))}` : '';
+                renderEnergyMessage('No daily energy recorded in this range. Totals start accumulating from the first poll after the server starts; pick a wider range or check back tomorrow.' + trendError);
                 return;
             }
-            const first = state.from || rows[0].day;
-            const last = state.to || rows[rows.length - 1].day;
             const dayCount = Math.round((dayX(last) - dayX(first)) / DAY) + 1;
-            // One day of totals: title it by the day and skip the tiles that
-            // would only repeat the total (best day, per-day averages)
-            const singleDay = rows.length === 1;
+            // A one-day range (1h, 6h, From = To): title it by the day and skip
+            // the tiles that would only repeat the total (best day, averages)
+            const singleDay = dayCount === 1;
             if (singleDay) {
                 const day = rows[0].day;
-                $('energy-title').textContent = day === localDay(new Date()) ? 'Today' : fmtDayLong(day);
+                $('energy-title').textContent = day >= localDay(new Date()) ? 'Today' : fmtDayLong(day);
             }
             $('energy-note').textContent = singleDay
                 ? (SUBDAY.has(state.range) ? 'So far today · energy is totalled per local day' : 'kWh for the day')
@@ -841,17 +865,27 @@
             body.appendChild(totals);
 
             if (rolling) renderPowerChart(body);
-            else renderDailyBars(body, rows, first, last);
+            else renderDailyBars(body, rows, first, last, dayCount);
             renderEnergyTable(body, rows, first, last);
         }
 
-        function renderDailyBars(body, rows, first, last) {
+        function renderDailyBars(body, rows, first, last, dayCount) {
             const chips = document.createElement('div');
             chips.className = 'chips';
             body.appendChild(chips);
             const canvas = C.makeChart(body, false);
             canvas.setAttribute('aria-label', 'Daily energy chart');
-            canvas.setAttribute('aria-describedby', 'energy-table');
+            // A short text alternative; the table lists every day
+            const summary = document.createElement('p');
+            summary.className = 'sr-only';
+            summary.id = 'energy-chart-summary';
+            const total = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
+            summary.textContent = `Daily energy from ${fmtDayLong(first)} to ${fmtDayLong(last)}, ` +
+                `${rows.length} of ${dayCount} days recorded. Totals: ` +
+                ENERGY_SERIES.map(s => `${s.label} ${fmtNum(total(s.key), 1)} kWh`).join('; ') +
+                '. Show table lists each day.';
+            body.appendChild(summary);
+            canvas.setAttribute('aria-describedby', summary.id);
 
             const byDay = new Map(rows.map(r => [r.day, r]));
             const days = [];
@@ -1036,7 +1070,10 @@
                 return;
             }
             const units = powerwallUnits(series);
-            if (state.pw !== 'all' && !units.some(u => u.label === state.pw)) {
+            // Check pw= against every recorded unit (/signals) as well as
+            // this window, so a gap in one unit's data keeps the choice
+            const known = units.concat(powerwallUnits(catalog().series || []));
+            if (state.pw !== 'all' && !known.some(u => u.label === state.pw)) {
                 state.pw = 'all';  // e.g. pw=PW9: no such unit
                 writeUrl();
             }
@@ -1368,7 +1405,9 @@
             if (!state.to || state.to >= localDay(new Date())) {
                 lastRefresh = Date.now();
                 if (state.range !== 'custom') applyPreset(state.range);
-                reload(true);
+                // /signals again only for All (its first day moves with
+                // retention), or while nothing is recorded yet
+                reload(state.range === 'all' || !(state.devicesInfo?.series || []).length);
             }
         }, 60 * 1000);
 
