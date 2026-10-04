@@ -540,13 +540,15 @@
         const DEVICE_DASHES = [[], [7, 4], [2, 3], [10, 3, 2, 3]];
         const UNIT_KEY = 'pw_history_temp_unit';
         const HIDE_KEY = 'pw_history_hide';
+        const RANGE_KEY = 'pw_history_range';  // last preset picked
+        const DEFAULT_RANGE = '1d';
         // Hidden until switched on (daily energy shows solar only at first)
         const DEFAULT_HIDDEN = ENERGY_SERIES.filter(s => s.key !== 'solar_kwh').map(s => s.key);
         const REFRESH_MS = 5 * 60 * 1000;
         const FETCH_TIMEOUT_MS = 30 * 1000;
 
         const state = {
-            range: '30d',
+            range: DEFAULT_RANGE,
             from: null,          // 'YYYY-MM-DD'
             to: null,
             gateway: '',
@@ -649,7 +651,12 @@
             const from = validDay(p.get('from')) ? p.get('from') : null;
             const to = validDay(p.get('to')) ? p.get('to') : null;
             if (from || to) setCustomRange(from, to || localDay(new Date()));
-            else applyPreset(PRESETS.has(range) ? range : '30d');
+            else if (PRESETS.has(range)) applyPreset(range);
+            else {
+                // No range in the URL: the last preset used in this browser, else 24h
+                const saved = storageGet(RANGE_KEY);
+                applyPreset(PRESETS.has(saved) ? saved : DEFAULT_RANGE);
+            }
             state.gateway = p.get('gateway') || '';
             state.pw = p.get('pw') || 'all';
             // Switched-off series: URL first, then this browser, then defaults
@@ -1386,6 +1393,7 @@
 
         document.querySelectorAll('#range-presets button').forEach(b => b.addEventListener('click', () => {
             applyPreset(b.dataset.range);
+            storageSet(RANGE_KEY, b.dataset.range);
             reload(false);
         }));
         function onDateChange() {

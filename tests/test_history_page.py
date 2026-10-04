@@ -79,3 +79,11 @@ class TestSharedChartCode:
         page = client.get("/history").text
         assert re.search(r'<span[^>]*id="range-label"', page)
         assert 'aria-describedby\', \'energy-table\'' not in page
+
+    def test_default_range_is_24h_and_last_preset_is_remembered(self, client):
+        # Plain /history opens at 24h, or the last preset picked in this
+        # browser; a range in the URL still wins (bookmarks)
+        page = client.get("/history").text
+        assert "const DEFAULT_RANGE = '1d';" in page
+        assert "storageSet(RANGE_KEY, b.dataset.range)" in page
+        assert "else if (PRESETS.has(range)) applyPreset(range);" in page

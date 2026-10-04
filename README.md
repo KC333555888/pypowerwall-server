@@ -368,9 +368,10 @@ scan more than about 500k raw rows, use the daily low/average/high. The **1h** a
 every stored sample and refresh every minute; the energy card shows today
 for those ranges, since energy is totalled per day.
 
-The range, gateway, selected Powerwall (`pw=`) and any series you switch
-off (`hide=`, also remembered in the browser) are kept in the URL, so a
-view can be bookmarked, e.g. `/history?range=90d` or
+The page opens at **24h**, or at the last range preset you picked in that
+browser. The range, gateway, selected Powerwall (`pw=`) and any series you
+switch off (`hide=`, also remembered in the browser) are kept in the URL,
+so a view can be bookmarked, e.g. `/history?range=90d` or
 `/history?range=6h&pw=PW2&hide=fan_b_rpm`. Under `PROXY_BASE_URL` it is at
 `<base>/history`. The Console's Energy Trend and the History charts share
 one script, `app/static/js/charts.js`, and stylesheet,
