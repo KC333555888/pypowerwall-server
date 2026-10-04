@@ -8,6 +8,9 @@
  *       0-100 % right axis), legend toggles, hover crosshair + tooltip and a
  *       screen-reader summary. Battery kW is positive when discharging,
  *       grid kW positive when importing.
+ *   PWCharts.trendNote(data, label) -> string
+ *       The Energy Trend's status line for a /api/timeseries/trend load
+ *       (error, storage off, too few samples, or window and resolution).
  *   PWCharts.makeChart(container, short) -> canvas
  *   PWCharts.drawChart(canvas, cfg)
  *       Generic line/bar chart (day or time x-axis, min/max bands).
@@ -61,7 +64,7 @@
     // Local-time-aligned ticks between xMin and xMax (epoch seconds): the
     // largest step giving at most maxTicks, starting on a step boundary
     function timeTicks(xMin, xMax, maxTicks) {
-        const steps = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, DAY, 2 * DAY, 7 * DAY, 14 * DAY];
+        const steps = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, DAY, 2 * DAY, 3 * DAY, 4 * DAY, 7 * DAY, 14 * DAY];
         const step = steps.find(s => (xMax - xMin) / s <= maxTicks) || 30 * DAY;
         const offset = -new Date(xMin * 1000).getTimezoneOffset() * 60;
         const first = Math.ceil((xMin + offset) / step) * step - offset;
@@ -76,7 +79,7 @@
         if (cfg.xMode === 'day') {
             const ticks = [];
             const days = span / DAY;
-            const step = [1, 2, 7, 14, 30, 61, 91, 182, 365].find(s => days / s <= maxTicks) || 730;
+            const step = [1, 2, 3, 4, 7, 14, 30, 61, 91, 182, 365].find(s => days / s <= maxTicks) || 730;
             const first = Math.ceil((cfg.xMin - DAY / 2) / DAY) * DAY + DAY / 2;
             for (let x = first; x <= cfg.xMax; x += step * DAY) {
                 const d = new Date((x - DAY / 2) * 1000);
@@ -350,13 +353,6 @@
     const TREND_PAD = { l: 48, r: 44, t: 12, b: 24 };
     let trendCount = 0;
 
-    function hoverTime(ts) {
-        const d = new Date(ts * 1000);
-        const h = d.getHours() % 12 || 12;
-        const ap = d.getHours() >= 12 ? 'pm' : 'am';
-        return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${h}:${pad(d.getMinutes())}${ap}`;
-    }
-
     /**
      * Build an Energy Trend chart inside `container`.
      * opts.hidden:   iterable of series keys to start hidden
@@ -546,7 +542,7 @@
 
         function updateTooltip() {
             if (!hover) { tooltip.style.display = 'none'; return; }
-            const rows = [`<div class="tt-time">${esc(hoverTime(hover.ts))}</div>`];
+            const rows = [`<div class="tt-time">${esc(fmtTimeLong(hover.ts))}</div>`];
             for (const s of TREND_SERIES) {
                 if (hidden.has(s.key) || hover[s.key] == null) continue;
                 const v = hover[s.key];
@@ -568,7 +564,7 @@
                 parts.push(`${s.label} ${Math.min(...vals).toFixed(dp)} to ${Math.max(...vals).toFixed(dp)}${unit}`);
             }
             const { t0, t1 } = dom();
-            summary.textContent = `Energy trend from ${hoverTime(t0)} to ${hoverTime(t1)}: ${parts.join('; ')}.`;
+            summary.textContent = `Energy trend from ${fmtTimeLong(t0)} to ${fmtTimeLong(t1)}: ${parts.join('; ')}.`;
         }
 
         function leave() {
@@ -618,10 +614,25 @@
         };
     }
 
+    /**
+     * Status line under an Energy Trend for one /api/timeseries/trend load.
+     * data:  the response, or { error } when the request failed
+     * label: the window, e.g. "last 24h" (shown once there is data)
+     */
+    function trendNote(data, label) {
+        data = data || {};
+        if (data.error) return `Trend data unavailable: ${data.error}`;
+        if (data.enabled === false) return 'Energy Trend needs local time-series storage (PW_TIMESERIES_RETENTION not -1).';
+        const count = (data.points || []).length;
+        if (count < 2) return 'Not enough raw samples in this window yet \u2014 the trend appears as data accumulates.';
+        const bucketMin = Math.round((data.bucket_seconds || 240) / 60);
+        return `${label} \u00b7 ${bucketMin >= 60 ? (bucketMin / 60) + 'h' : bucketMin + ' min'} resolution \u00b7 ${count} points`;
+    }
+
     // Only what the Console and History pages use
     window.PWCharts = {
         DAY, TREND_SERIES,
         esc, pad, parseDay, dayX, xDay, fmtDayLong, fmtTimeLong,
-        makeChart, drawChart, energyTrend, prune,
+        makeChart, drawChart, energyTrend, trendNote, prune,
     };
 })();

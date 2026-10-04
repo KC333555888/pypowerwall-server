@@ -2844,7 +2844,7 @@
                 if (!data.enabled) {
                     energyTrendPoints = null;
                     drawEnergyTrendChart();
-                    note.textContent = 'Energy Trend needs local time-series storage (PW_TIMESERIES_RETENTION not -1).';
+                    note.textContent = PWCharts.trendNote({ enabled: false });
                     return;
                 }
                 const points = data.points || [];
@@ -2867,17 +2867,16 @@
                 if (points.length < 2) {
                     energyTrendPoints = null;
                     drawEnergyTrendChart();
-                    note.textContent = 'Not enough raw samples in this window yet \u2014 the trend appears as data accumulates.';
+                    note.textContent = PWCharts.trendNote(data);
                     return;
                 }
                 energyTrendPoints = points;
-                const bucketMin = Math.round((data.bucket_seconds || 240) / 60);
-                note.textContent = `${label} \u00b7 ${bucketMin >= 60 ? (bucketMin / 60) + 'h' : bucketMin + ' min'} resolution \u00b7 ${points.length} points`;
+                note.textContent = PWCharts.trendNote(data, label);
                 drawEnergyTrendChart();
             } catch (e) {
                 energyTrendPoints = null;
                 drawEnergyTrendChart();
-                note.textContent = `Trend data unavailable: ${e.message}`;
+                note.textContent = PWCharts.trendNote({ error: e.message });
             }
         }
 
